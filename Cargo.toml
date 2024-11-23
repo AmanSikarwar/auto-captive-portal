@@ -1,13 +1,19 @@
 [package]
 name = "acp-script"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dotenv = "0.15.0"
-headless_chrome = "1.0.9"
-regex = "1.10.6"
-reqwest = "0.12.7"
-tokio = { version = "1.40.0", features = ["full"] }
+headless_chrome = "1.0.15"
+regex = "1.11.1"
+reqwest = "0.12.9"
+tokio = { version = "1.41.1", features = ["full"] }
+keyring = { version = "3.6.1", features = [
+    "apple-native",
+    "sync-secret-service",
+] }
+dirs = "5.0.1"
+thiserror = "2.0.3"
+notify-rust = "4.11.3"

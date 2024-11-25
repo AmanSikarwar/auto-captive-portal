@@ -5,6 +5,7 @@ mod service;
 
 use error::{AppError, Result};
 use keyring::Entry;
+use log::{error, info};
 use service::{ServiceManager, SERVICE_NAME};
 use std::{
     env,
@@ -31,7 +32,7 @@ fn prompt_input(prompt: &str) -> std::result::Result<String, std::io::Error> {
 }
 
 async fn setup() -> Result<()> {
-    println!("Setting up Auto Captive Portal...");
+    info!("Starting setup for Auto Captive Portal...");
 
     let username: String = prompt_input("Enter LDAP Username: ").map_err(AppError::from)?;
     let password: String = prompt_input("Enter LDAP Password: ").map_err(AppError::from)?;
@@ -42,7 +43,7 @@ async fn setup() -> Result<()> {
     service_manager.store_credentials(&username, &password)?;
     service_manager.create_service()?;
 
-    println!("Setup completed successfully!");
+    info!("Setup completed successfully.");
     Ok(())
 }
 
@@ -52,20 +53,21 @@ async fn run() -> Result<()> {
     loop {
         match captive_portal::check_captive_portal().await {
             Ok(Some(url)) => {
-                println!("Captive portal detected at {}", url);
+                info!("Captive portal detected at {}", url);
                 if let Err(e) = captive_portal::login(&url, &username, &password).await {
-                    eprintln!("Login failed: {}", e);
+                    error!("Login failed: {}", e);
                     service::restart_service().await?;
                 } else {
                     notifications::send_notification(
                         "Captive portal detected and logged in successfully",
                     )
                     .await;
+                    info!("Logged into captive portal successfully.");
                 }
             }
-            Ok(None) => println!("No captive portal detected"),
+            Ok(None) => info!("No captive portal detected."),
             Err(e) => {
-                eprintln!("Portal check failed: {}", e);
+                error!("Portal check failed: {}", e);
                 service::restart_service().await?;
             }
         }
@@ -76,16 +78,18 @@ async fn run() -> Result<()> {
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
+
     if env::args().nth(1).as_deref() == Some("setup") {
         if let Err(e) = setup().await {
-            eprintln!("Setup failed: {}", e);
+            error!("Setup failed: {}", e);
             std::process::exit(1);
         }
         return;
     }
 
     if let Err(e) = run().await {
-        eprintln!("Application error: {}", e);
+        error!("Application error: {}", e);
         std::process::exit(1);
     }
 }

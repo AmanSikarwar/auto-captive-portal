@@ -1,5 +1,6 @@
 use crate::error::{AppError, Result};
 use keyring::Entry;
+use log::{error, info};
 use std::fs;
 use std::path::PathBuf;
 
@@ -48,6 +49,11 @@ impl ServiceManager {
     <array>
         <string>{}</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>INFO</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -58,6 +64,8 @@ impl ServiceManager {
             self.executable_path.display()
         );
 
+        info!("Creating service at {}", plist_path.display());
+
         fs::write(&plist_path, plist_content)?;
 
         let output: std::process::Output = std::process::Command::new("launchctl")
@@ -65,11 +73,16 @@ impl ServiceManager {
             .output()?;
 
         if !output.status.success() {
+            error!(
+                "Failed to load service: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             return Err(AppError::Service(
                 String::from_utf8_lossy(&output.stderr).into_owned(),
             ));
         }
 
+        info!("Service created and loaded successfully.");
         Ok(())
     }
 
@@ -85,6 +98,7 @@ impl ServiceManager {
 Description=Auto Captive Portal Login Service
 
 [Service]
+Environment=RUST_LOG=INFO
 ExecStart={}
 Restart=on-failure
 RestartSec=10
@@ -114,6 +128,8 @@ WantedBy=default.target"#,
 }
 
 pub async fn restart_service() -> Result<()> {
+    info!("Restarting service: {}", SERVICE_NAME);
+
     #[cfg(target_os = "linux")]
     {
         let output = std::process::Command::new("systemctl")
@@ -121,6 +137,10 @@ pub async fn restart_service() -> Result<()> {
             .output()?;
 
         if !output.status.success() {
+            error!(
+                "Failed to restart service: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             return Err(AppError::Service(
                 String::from_utf8_lossy(&output.stderr).into_owned(),
             ));
@@ -134,11 +154,16 @@ pub async fn restart_service() -> Result<()> {
             .output()?;
 
         if !output.status.success() {
+            error!(
+                "Failed to restart service: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             return Err(AppError::Service(
                 String::from_utf8_lossy(&output.stderr).into_owned(),
             ));
         }
     }
 
+    info!("Service restarted successfully.");
     Ok(())
 }

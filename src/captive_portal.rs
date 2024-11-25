@@ -1,5 +1,6 @@
 use crate::error::{AppError, Result};
 use headless_chrome::Browser;
+use log::{error, info};
 use regex::Regex;
 use reqwest::StatusCode;
 
@@ -58,9 +59,10 @@ pub async fn login(url: &str, username: &str, password: &str) -> Result<()> {
         .map_err(|e| AppError::Browser(e.to_string()))?;
 
     if success_text.contains("Authentication Successful") {
-        println!("login successful");
+        info!("Successfully authenticated with the captive portal.");
         Ok(())
     } else {
+        error!("Authentication unsuccessful.");
         Err(AppError::LoginFailed(
             "Authentication unsuccessful".to_string(),
         ))

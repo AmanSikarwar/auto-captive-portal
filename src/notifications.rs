@@ -5,7 +5,8 @@ pub async fn send_notification(message: &str) {
         .summary("Auto Captive Portal")
         .body(message)
         .appname("Auto Captive Portal")
-        .timeout(5)
+        .icon("dialog-information")
+        .timeout(5000)
         .show()
         .ok();
 }

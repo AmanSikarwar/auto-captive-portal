@@ -19,10 +19,10 @@ impl ServiceManager {
     }
 
     pub fn store_credentials(&self, username: &str, password: &str) -> Result<()> {
-        let username_entry = Entry::new(SERVICE_NAME, "ldap_username")?;
+        let username_entry: Entry = Entry::new(SERVICE_NAME, "ldap_username")?;
         username_entry.set_password(username)?;
 
-        let password_entry = Entry::new(SERVICE_NAME, "ldap_password")?;
+        let password_entry: Entry = Entry::new(SERVICE_NAME, "ldap_password")?;
         password_entry.set_password(password)?;
 
         Ok(())
@@ -30,7 +30,7 @@ impl ServiceManager {
 
     #[cfg(target_os = "macos")]
     pub fn create_service(&self) -> Result<()> {
-        let plist_path = dirs::home_dir()
+        let plist_path: PathBuf = dirs::home_dir()
             .ok_or_else(|| AppError::Service("Home directory not found".into()))?
             .join("Library/LaunchAgents")
             .join(format!("{}.plist", SERVICE_NAME));
@@ -60,7 +60,7 @@ impl ServiceManager {
 
         fs::write(&plist_path, plist_content)?;
 
-        let output = std::process::Command::new("launchctl")
+        let output: std::process::Output = std::process::Command::new("launchctl")
             .args(["load", plist_path.to_str().unwrap()])
             .output()?;
 
@@ -129,7 +129,7 @@ pub async fn restart_service() -> Result<()> {
 
     #[cfg(target_os = "macos")]
     {
-        let output = std::process::Command::new("launchctl")
+        let output: std::process::Output = std::process::Command::new("launchctl")
             .args(["kickstart", "-k", SERVICE_NAME])
             .output()?;
 

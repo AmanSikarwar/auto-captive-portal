@@ -12,8 +12,10 @@ use std::{
 };
 
 fn get_credentials() -> Result<(String, String)> {
-    let username_entry = Entry::new(SERVICE_NAME, "ldap_username").map_err(AppError::from)?;
-    let password_entry = Entry::new(SERVICE_NAME, "ldap_password").map_err(AppError::from)?;
+    let username_entry: Entry =
+        Entry::new(SERVICE_NAME, "ldap_username").map_err(AppError::from)?;
+    let password_entry: Entry =
+        Entry::new(SERVICE_NAME, "ldap_password").map_err(AppError::from)?;
     Ok((
         username_entry.get_password().map_err(AppError::from)?,
         password_entry.get_password().map_err(AppError::from)?,
@@ -23,7 +25,7 @@ fn get_credentials() -> Result<(String, String)> {
 fn prompt_input(prompt: &str) -> std::result::Result<String, std::io::Error> {
     print!("{}", prompt);
     io::stdout().flush()?;
-    let mut input = String::new();
+    let mut input: String = String::new();
     io::stdin().read_line(&mut input)?;
     Ok(input.trim().to_string())
 }
@@ -31,11 +33,11 @@ fn prompt_input(prompt: &str) -> std::result::Result<String, std::io::Error> {
 async fn setup() -> Result<()> {
     println!("Setting up Auto Captive Portal...");
 
-    let username = prompt_input("Enter LDAP Username: ").map_err(AppError::from)?;
-    let password = prompt_input("Enter LDAP Password: ").map_err(AppError::from)?;
+    let username: String = prompt_input("Enter LDAP Username: ").map_err(AppError::from)?;
+    let password: String = prompt_input("Enter LDAP Password: ").map_err(AppError::from)?;
 
-    let executable_path = env::current_exe()?;
-    let service_manager = ServiceManager::new(executable_path);
+    let executable_path: std::path::PathBuf = env::current_exe()?;
+    let service_manager: ServiceManager = ServiceManager::new(executable_path);
 
     service_manager.store_credentials(&username, &password)?;
     service_manager.create_service()?;

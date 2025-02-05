@@ -52,9 +52,9 @@ async fn run() -> Result<()> {
 
     loop {
         match captive_portal::check_captive_portal().await {
-            Ok(Some(url)) => {
+            Ok(Some((url, magic))) => {
                 info!("Captive portal detected at {}", url);
-                if let Err(e) = captive_portal::login(&url, &username, &password).await {
+                if let Err(e) = captive_portal::login(&url, &username, &password, &magic).await {
                     error!("Login failed: {}", e);
                     service::restart_service().await?;
                 } else {
@@ -71,7 +71,6 @@ async fn run() -> Result<()> {
                 service::restart_service().await?;
             }
         }
-
         tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
     }
 }

@@ -2,9 +2,6 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum AppError {
-    #[error("Browser error: {0}")]
-    Browser(String),
-
     #[error("Keyring error: {0}")]
     Keyring(#[from] keyring::Error),
 

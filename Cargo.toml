@@ -6,7 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-headless_chrome = "1.0.15"
 regex = "1.11.1"
 reqwest = "0.12.12"
 tokio = { version = "1.43.0", features = ["full"] }
@@ -17,5 +16,5 @@ keyring = { version = "3.6.1", features = [
 dirs = "6.0.0"
 thiserror = "2.0.11"
 notify-rust = "4.11.4"
-log = "0.4.22"
-env_logger = "0.11.5"
+log = "0.4.25"
+env_logger = "0.11.6"

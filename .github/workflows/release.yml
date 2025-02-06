@@ -1,30 +1,30 @@
-# .github/workflows/release.yml
-name: Release
+name: Cross-Compile Build (macOS and Linux)
 
 on:
-  push:
-    tags:
-      - "v*"
+  push: # Trigger on any push
+    branches:
+      - main # You can restrict to specific branches
+  pull_request: #Also on pull request.
+  workflow_dispatch: # Allow manual triggering
 
 jobs:
-  build-and-release:
-    name: Build and Release
-    runs-on: ${{ matrix.os }}
+  build:
+    runs-on: macos-latest # We build on macOS
+
     strategy:
       matrix:
         include:
-          # - os: ubuntu-latest
-          #   target: x86_64-unknown-linux-gnu
-          #   artifact_name: acp-script
-          #   asset_name: acp-script-linux-amd64
-          # - os: macos-latest # Use macos-latest directly
-          #   target: x86_64-apple-darwin
-          #   artifact_name: acp-script
-          #   asset_name: acp-script-macos-x86_64
-          - os: macos-latest # Use macos-latest directly
-            target: aarch64-apple-darwin
-            artifact_name: acp-script
-            asset_name: acp-script-macos-arm64
+          - target: x86_64-apple-darwin # macOS Intel
+            os: macos-latest
+            artifact_name: acp-script-macos-x86_64
+          - target: aarch64-apple-darwin # macOS ARM64 (M1/M2/M3)
+            os: macos-latest
+            artifact_name: acp-script-macos-arm64
+          - target: x86_64-unknown-linux-gnu # Linux (64-bit)
+            os: macos-latest # Build *on* macOS, *for* Linux.  Cross-compilation!
+            artifact_name: acp-script-linux-amd64
+            #It is not strictly necesary.
+            install_deps: true # Indicate we need to install Linux dependencies
 
     steps:
       - name: Checkout code
@@ -35,15 +35,28 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-latest'
+      - name: Install Linux Dependencies (Conditional)
+        if: matrix.install_deps == true
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
+          brew install coreutils #for some build to complete (cross-correlation fails without this).
+          brew install gnu-sed
+          brew install FiloSottile/musl-cross/musl-cross
+          rustup target add x86_64-unknown-linux-musl #use MUSL
+          # No sudo needed for cargo/rust cross.
+          #The key change is removing the apt-get, now is set on linux container build.
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build for ${{ matrix.target }}
+        run: |
+          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-gnu" ]]; then
+            #If you change Cargo.toml remember to update CARGO_FEATURES
+            cargo build --release --target=x86_64-unknown-linux-musl  #build all except specific crates.
 
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+        env:
+          #Fix build issue on mac-notification crate in cross-compiling mode.
+          RUSTFLAGS: "-C target-feature=+crt-static"
       - name: Create Universal Binary (macOS)
         if: matrix.os == 'macos-latest' && matrix.target == 'aarch64-apple-darwin'
         run: |
@@ -57,16 +70,26 @@ jobs:
             "target/aarch64-apple-darwin/release/${{ matrix.artifact_name }}" \
             -output "universal-${{ matrix.artifact_name }}"
           # Rename for clarity and consistency
-          mv "universal-${{ matrix.artifact_name }}" ${{ matrix.asset_name }}-universal
+          mv "universal-${{ matrix.artifact_name }}" ${{ matrix.artifact_name }}-universal
+        shell: bash
 
-      - name: Package Binary (Exclude aarch64 on macOS - it's part of the universal binary)
+      - name: Package Binary (Exclude aarch64 on macOS - it's part of universal)
         if: matrix.target != 'aarch64-apple-darwin'
         run: |
-          # Rename the binary to the final asset name (for non-universal builds)
-          mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }}
+          if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then #copy executable.
+            mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.artifact_name }}
+          fi
+          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-gnu" ]]; then #copy executable.
+              mv target/x86_64-unknown-linux-musl/release/${{ matrix.artifact_name }} ${{ matrix.artifact_name }}
+          fi
 
-      - name: Upload Release Asset
+      - name: Upload Release Asset (conditional name)
+        if: matrix.target != 'aarch64-apple-darwin'
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            ${{ matrix.asset_name }}${{ matrix.target == 'aarch64-apple-darwin' && '-universal' || '' }}  # Conditional file name
+          files: ${{ matrix.artifact_name }} # Conditional file name
+      - name: Upload aarch64 universal file #Separate step, conditional skipped previously
+        if: matrix.target == 'aarch64-apple-darwin' #Avoid multiple artifacts uploads
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ matrix.artifact_name }}-universal # Conditional file name

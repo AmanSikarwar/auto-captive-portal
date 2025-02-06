@@ -1,4 +1,4 @@
-name: Cross-Compile Build (macOS and Linux)
+name: Cross-Compile Build (Self-Hosted)
 
 on:
   push:
@@ -9,8 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest # Build everything on macOS
-
+    runs-on: self-hosted # Use the self-hosted runner
     strategy:
       matrix:
         include:
@@ -18,36 +17,31 @@ jobs:
             artifact_name: acp-script-macos-x86_64
           - target: aarch64-apple-darwin # macOS ARM64
             artifact_name: acp-script-macos-arm64
-          - target: x86_64-unknown-linux-musl # Linux (64-bit, static linking)
+          - target: x86_64-unknown-linux-musl #Linux using MUSL.
             artifact_name: acp-script-linux-amd64
-            # No need for separate 'install_deps' now
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Install Rust #This is now installing and setupping components using a Github Action.
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install MUSL Support (for Linux cross-compilation)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: |
-          brew install FiloSottile/musl-cross/musl-cross
-          rustup target add x86_64-unknown-linux-musl
-
       - name: Build for ${{ matrix.target }}
         run: |
           if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
-            echo "RUSTFLAGS=-C linker=/opt/homebrew/opt/musl-cross/bin/x86_64-linux-musl-gcc" >> "$GITHUB_ENV"
+              echo "RUSTFLAGS=-C linker=/opt/homebrew/opt/musl-cross/bin/x86_64-linux-musl-gcc" >> "$GITHUB_ENV"
           fi
           cargo build --release --target ${{ matrix.target }}
-        env: #This goes AFTER build.
-          RUSTFLAGS: "-C target-feature=+crt-static" #Fix static compilation
+        env: # Moved RUSTFLAGS inside.  Only relevant during cargo build
+          RUSTFLAGS: "-C target-feature=+crt-static"
 
       - name: Create Universal Binary (macOS)
         if: matrix.target == 'aarch64-apple-darwin'
         run: |
+          # Wait for x86_64 build (file check, as before)
           while [ ! -f "target/x86_64-apple-darwin/release/${{ matrix.artifact_name }}" ]; do
             sleep 5
           done
@@ -56,14 +50,15 @@ jobs:
             "target/aarch64-apple-darwin/release/${{ matrix.artifact_name }}" \
             -output "universal-${{ matrix.artifact_name }}"
           mv "universal-${{ matrix.artifact_name }}" ${{ matrix.artifact_name }}-universal
+        shell: bash
 
-      - name: Package Binary (Exclude aarch64 on macOS - part of universal)
+      - name: Package Binary (Exclude aarch64 on macOS)
         if: matrix.target != 'aarch64-apple-darwin'
         run: |
-          if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
-            mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.artifact_name }}
+          if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then #copy executable.
+              mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.artifact_name }}
           fi
-          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
+          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then #copy executable.
               mv target/x86_64-unknown-linux-musl/release/${{ matrix.artifact_name }} ${{ matrix.artifact_name }}
           fi
 
@@ -77,4 +72,4 @@ jobs:
         if: matrix.target == 'aarch64-apple-darwin' #Avoid multiple artifacts uploads
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ matrix.artifact_name }}-universal
+          files: ${{ matrix.artifact_name }}-universal # Conditional file name

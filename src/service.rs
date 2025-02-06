@@ -2,6 +2,8 @@ use crate::error::{AppError, Result};
 use keyring::Entry;
 use log::{error, info};
 use std::fs;
+#[cfg(target_os = "linux")]
+use std::io;
 use std::path::PathBuf;
 
 pub const SERVICE_NAME: &str = if cfg!(target_os = "macos") {

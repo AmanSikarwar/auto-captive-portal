@@ -1,4 +1,3 @@
-# .github/workflows/release.yml
 name: Release
 
 permissions:
@@ -6,14 +5,12 @@ permissions:
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
 
 jobs:
   build-and-release:
-    name: Build and Release
+    name: Build and Release (${{ matrix.os }}, ${{ matrix.target }}) # Improved name
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -22,11 +19,11 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_name: acp-script
             asset_name: acp-script-linux-amd64
-          - os: macos-latest # Use macos-latest directly
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: acp-script
             asset_name: acp-script-macos-x86_64
-          - os: macos-latest # Use macos-latest directly
+          - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: acp-script
             asset_name: acp-script-macos-arm64
@@ -49,10 +46,14 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Create Universal Binary (macOS)
+      - name: Rename Binary (Non-Universal)
+        if: matrix.os != 'macos-latest' || matrix.target != 'aarch64-apple-darwin' # Corrected condition
+        run: mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }}
+
+      - name: Create Universal Binary (macOS) and Rename
         if: matrix.os == 'macos-latest' && matrix.target == 'aarch64-apple-darwin'
         run: |
-          # Wait for x86_64 build to complete (using a simple file check loop)
+          # Wait for x86_64 build to complete
           while [ ! -f "target/x86_64-apple-darwin/release/${{ matrix.artifact_name }}" ]; do
             sleep 5
           done
@@ -60,18 +61,18 @@ jobs:
           lipo -create \
             "target/x86_64-apple-darwin/release/${{ matrix.artifact_name }}" \
             "target/aarch64-apple-darwin/release/${{ matrix.artifact_name }}" \
-            -output "universal-${{ matrix.artifact_name }}"
-          # Rename for clarity and consistency
-          mv "universal-${{ matrix.artifact_name }}" ${{ matrix.asset_name }}-universal
-
-      - name: Package Binary (Exclude aarch64 on macOS - it's part of the universal binary)
-        if: matrix.target != 'aarch64-apple-darwin'
-        run: |
-          # Rename the binary to the final asset name (for non-universal builds)
-          mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }}
+            -output "${{ matrix.asset_name }}-universal"
 
       - name: Upload Release Asset
+        if: matrix.os != 'macos-latest' || matrix.target != 'aarch64-apple-darwin' # Run for non-universal builds
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            ${{ matrix.asset_name }}${{ matrix.target == 'aarch64-apple-darwin' && '-universal' || '' }}  # Conditional file name
+          files: ${{ matrix.asset_name }} # Corrected: no extra whitespace, no incorrect conditional
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Universal Release Asset (macOS)
+        if: matrix.os == 'macos-latest' && matrix.target == 'aarch64-apple-darwin' # Run ONLY for the arm64 macOS build
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ matrix.asset_name }}-universal # Upload the universal binary
+          token: ${{ secrets.GITHUB_TOKEN }}

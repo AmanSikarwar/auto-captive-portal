@@ -10,7 +10,7 @@ on:
 
 jobs:
   build-and-release:
-    name: Build and Release (${{ matrix.os }}, ${{ matrix.target }}) # Improved name
+    name: Build and Release (${{ matrix.os }}, ${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -46,33 +46,11 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Rename Binary (Non-Universal)
-        if: matrix.os != 'macos-latest' || matrix.target != 'aarch64-apple-darwin' # Corrected condition
+      - name: Rename Binary
         run: mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }}
 
-      - name: Create Universal Binary (macOS) and Rename
-        if: matrix.os == 'macos-latest' && matrix.target == 'aarch64-apple-darwin'
-        run: |
-          # Wait for x86_64 build to complete
-          while [ ! -f "target/x86_64-apple-darwin/release/${{ matrix.artifact_name }}" ]; do
-            sleep 5
-          done
-          # Create the universal binary using lipo
-          lipo -create \
-            "target/x86_64-apple-darwin/release/${{ matrix.artifact_name }}" \
-            "target/aarch64-apple-darwin/release/${{ matrix.artifact_name }}" \
-            -output "${{ matrix.asset_name }}-universal"
-
       - name: Upload Release Asset
-        if: matrix.os != 'macos-latest' || matrix.target != 'aarch64-apple-darwin' # Run for non-universal builds
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ matrix.asset_name }} # Corrected: no extra whitespace, no incorrect conditional
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload Universal Release Asset (macOS)
-        if: matrix.os == 'macos-latest' && matrix.target == 'aarch64-apple-darwin' # Run ONLY for the arm64 macOS build
-        uses: softprops/action-gh-release@v1
-        with:
-          files: ${{ matrix.asset_name }}-universal # Upload the universal binary
+          files: ${{ matrix.asset_name }}
           token: ${{ secrets.GITHUB_TOKEN }}

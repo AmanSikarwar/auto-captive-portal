@@ -18,3 +18,8 @@ thiserror = "2.0.11"
 notify-rust = "4.11.4"
 log = "0.4.25"
 env_logger = "0.11.6"
+[target.x86_64-unknown-linux-musl.dependencies]
+openssl = { version = "0.10.70", features = ["vendored"] }
+
+[target.aarch64-unknown-linux-musl.dependencies]
+openssl = { version = "0.10.70", features = ["vendored"] }

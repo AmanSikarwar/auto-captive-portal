@@ -1,75 +1,72 @@
-name: Cross-Compile Build (Self-Hosted)
+# .github/workflows/release.yml
+name: Release
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
-  workflow_dispatch:
+    tags:
+      - "v*"
 
 jobs:
-  build:
-    runs-on: self-hosted # Use the self-hosted runner
+  build-and-release:
+    name: Build and Release
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
-          - target: x86_64-apple-darwin # macOS Intel
-            artifact_name: acp-script-macos-x86_64
-          - target: aarch64-apple-darwin # macOS ARM64
-            artifact_name: acp-script-macos-arm64
-          - target: x86_64-unknown-linux-musl #Linux using MUSL.
-            artifact_name: acp-script-linux-amd64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: acp-script
+            asset_name: acp-script-linux-amd64
+          - os: macos-latest # Use macos-latest directly
+            target: x86_64-apple-darwin
+            artifact_name: acp-script
+            asset_name: acp-script-macos-x86_64
+          - os: macos-latest # Use macos-latest directly
+            target: aarch64-apple-darwin
+            artifact_name: acp-script
+            asset_name: acp-script-macos-arm64
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust #This is now installing and setupping components using a Github Action.
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Build for ${{ matrix.target }}
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
         run: |
-          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
-              echo "RUSTFLAGS=-C linker=/opt/homebrew/opt/musl-cross/bin/x86_64-linux-musl-gcc" >> "$GITHUB_ENV"
-          fi
-          cargo build --release --target ${{ matrix.target }}
-        env: # Moved RUSTFLAGS inside.  Only relevant during cargo build
-          RUSTFLAGS: "-C target-feature=+crt-static"
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Create Universal Binary (macOS)
-        if: matrix.target == 'aarch64-apple-darwin'
+        if: matrix.os == 'macos-latest' && matrix.target == 'aarch64-apple-darwin'
         run: |
-          # Wait for x86_64 build (file check, as before)
+          # Wait for x86_64 build to complete (using a simple file check loop)
           while [ ! -f "target/x86_64-apple-darwin/release/${{ matrix.artifact_name }}" ]; do
             sleep 5
           done
+          # Create the universal binary using lipo
           lipo -create \
             "target/x86_64-apple-darwin/release/${{ matrix.artifact_name }}" \
             "target/aarch64-apple-darwin/release/${{ matrix.artifact_name }}" \
             -output "universal-${{ matrix.artifact_name }}"
-          mv "universal-${{ matrix.artifact_name }}" ${{ matrix.artifact_name }}-universal
-        shell: bash
+          # Rename for clarity and consistency
+          mv "universal-${{ matrix.artifact_name }}" ${{ matrix.asset_name }}-universal
 
-      - name: Package Binary (Exclude aarch64 on macOS)
+      - name: Package Binary (Exclude aarch64 on macOS - it's part of the universal binary)
         if: matrix.target != 'aarch64-apple-darwin'
         run: |
-          if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then #copy executable.
-              mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.artifact_name }}
-          fi
-          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then #copy executable.
-              mv target/x86_64-unknown-linux-musl/release/${{ matrix.artifact_name }} ${{ matrix.artifact_name }}
-          fi
+          # Rename the binary to the final asset name (for non-universal builds)
+          mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }}
 
-      - name: Upload Release Asset (conditional name)
-        if: matrix.target != 'aarch64-apple-darwin'
+      - name: Upload Release Asset
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ matrix.artifact_name }} # Conditional file name
-
-      - name: Upload aarch64 universal file #Separate step, conditional skipped previously
-        if: matrix.target == 'aarch64-apple-darwin' #Avoid multiple artifacts uploads
-        uses: softprops/action-gh-release@v1
-        with:
-          files: ${{ matrix.artifact_name }}-universal # Conditional file name
+          files: |
+            ${{ matrix.asset_name }}${{ matrix.target == 'aarch64-apple-darwin' && '-universal' || '' }}  # Conditional file name

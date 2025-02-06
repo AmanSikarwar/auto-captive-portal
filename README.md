@@ -5,7 +5,6 @@ This project is a Rust application that automatically handles IIT Mandi captive 
 ## Prerequisites
 
 - Rust and Cargo
-- Google Chrome
 - macOS or Linux
 
 ## Installation

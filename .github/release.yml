@@ -27,7 +27,8 @@ jobs:
             asset_name: acp-script-macos-arm64
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -54,18 +55,16 @@ jobs:
             "target/x86_64-apple-darwin/release/${{ matrix.artifact_name }}" \
             "target/aarch64-apple-darwin/release/${{ matrix.artifact_name }}" \
             -output "universal-${{ matrix.artifact_name }}"
-          tar -czf ${{ matrix.asset_name }}-universal.tar.gz "universal-${{ matrix.artifact_name }}"
+          mv "universal-${{ matrix.artifact_name }}" ${{ matrix.asset_name }}-universal # Rename for clarity
 
       - name: Package Binary
-        if: matrix.target != 'aarch64-apple-darwin'
+        if: matrix.target != 'aarch64-apple-darwin' # Exclude aarch64-apple-darwin
         run: |
-          cd target/${{ matrix.target }}/release
-          tar -czf ../../../${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
-          cd -
+          mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }} # Rename directly for other targets
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            ${{ matrix.asset_name }}.tar.gz
-            ${{ matrix.asset_name }}-universal.tar.gz
+            ${{ matrix.asset_name }}-universal # Universal Binary (if created)
+            ${{ matrix.asset_name }} # Linux/macOS x86_64 Executables

@@ -1,44 +1,42 @@
 # Auto Captive Portal Login
 
-This project is a Rust application that automatically handles IIT Mandi captive portal authentication. It runs as a background service that checks for captive portals every 10 seconds, performs automatic login, and sends desktop notifications on successful authentication.
+This Rust application automates authentication for the IIT Mandi captive portal. It runs as a background service, checking for captive portals every 10 seconds, logging in automatically when detected, and sending desktop notifications upon successful login.
 
 ## Prerequisites
 
-- Rust and Cargo
-- macOS or Linux
+- **macOS** or **Linux**
+- **jq** (required for the installation script):
+  - On macOS: `brew install jq`
+  - On Linux: `apt install jq` (Debian/Ubuntu) or `yum install jq` (CentOS/RHEL)
+- **Rust and Cargo** (only if building from source)
 
 ## Installation
 
-1. Clone the repository:
+To install and set up the Auto Captive Portal Login service, run
 
 ```bash
-git clone https://github.com/amansikarwar/auto-captive-portal.git
-cd auto-captive-portal
+curl -fsSL https://raw.githubusercontent.com/amansikarwar/auto-captive-portal/main/install.sh | bash
 ```
 
-2. Build the project:
+This command will:
 
-```bash
-cargo build --release
-```
+- Download the latest `acp` binary for your platform from GitHub releases.
+- Install it to `/usr/local/bin/acp`.
+- Run the `setup` command, prompting you for your LDAP credentials to configure the service.
 
-3. Run the setup:
+**Note**: You will be prompted for your LDAP credentials during the setup process
 
-```bash
-./target/release/acp-script setup
-```
+### Supported Platforms
 
-This will:
-
-- Prompt for your LDAP credentials
-- Store credentials securely in the system keychain
-- Create and start the background service
+- **Linux (x86_64)**
+- **macOS (x86_64)**
+- **macOS (arm64)**
 
 ## Platform-specific Details
 
 ### macOS
 
-The service runs as a LaunchAgent and will start automatically on login.
+The service runs as a LaunchAgent and starts automatically on login.
 
 To manually manage the service:
 
@@ -50,7 +48,7 @@ launchctl load ~/Library/LaunchAgents/com.user.acp.plist
 launchctl unload ~/Library/LaunchAgents/com.user.acp.plist
 
 # View logs
-log show --predicate 'processImagePath contains "acp-script"'
+log show --predicate 'processImagePath contains "acp"'
 ```
 
 ### Linux
@@ -69,6 +67,34 @@ systemctl --user stop acp
 # View logs
 journalctl --user -u acp
 ```
+
+## Uninstallation
+
+To uninstall the Auto Captive Portal Login service and remove the binary, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/amansikarwar/auto-captive-portal/main/install.sh | bash -s uninstall
+```
+
+This will:
+
+- Stop and remove the service.
+- Delete the stored credentials.
+- Remove the `acp` binary from `/usr/local/bin/`.
+
+## Troubleshooting
+
+If you encounter issues during installation or while running the service, try the following:
+
+- **Check Logs**:
+  - macOS: `log show --predicate 'processImagePath contains "acp"'`
+  - Linux: `journalctl --user -u acp`
+- **Ensure Network Connectivity**: The installation script requires internet access to download the binary.
+- **Verify Service Status**:
+  - macOS: `launchctl list | grep com.user.acp`
+  - Linux: `systemctl --user status acp`
+- **Re-run Setup**: If credentials are incorrect, run `/usr/local/bin/acp setup` to re-enter them.
+- **Check Permissions**: Ensure you have sudo privileges for moving the binary to `/usr/local/bin/`.
 
 ## License
 

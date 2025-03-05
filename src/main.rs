@@ -3,14 +3,12 @@ mod error;
 mod notifications;
 mod service;
 
+use console::Term;
 use error::{AppError, Result};
 use keyring::Entry;
 use log::{error, info};
 use service::{ServiceManager, SERVICE_NAME};
-use std::{
-    env,
-    io::{self, Write},
-};
+use std::env;
 
 fn get_credentials() -> Result<(String, String)> {
     let username_entry: Entry =
@@ -23,19 +21,23 @@ fn get_credentials() -> Result<(String, String)> {
     ))
 }
 
-fn prompt_input(prompt: &str) -> std::result::Result<String, std::io::Error> {
-    print!("{}", prompt);
-    io::stdout().flush()?;
-    let mut input: String = String::new();
-    io::stdin().read_line(&mut input)?;
-    Ok(input.trim().to_string())
+fn prompt_input(prompt: &str, is_password: bool) -> std::io::Result<String> {
+    let term = Term::stdout();
+    term.write_str(prompt)?; // Write the prompt to the terminal
+    term.flush()?;          // Ensure the prompt is displayed immediately
+    let input = if is_password {
+        term.read_secure_line()? // Read password without echoing
+    } else {
+        term.read_line()?        // Read username with visible input
+    };
+    Ok(input.trim().to_string()) // Trim whitespace and return
 }
 
 async fn setup() -> Result<()> {
     info!("Starting setup for Auto Captive Portal...");
 
-    let username: String = prompt_input("Enter LDAP Username: ").map_err(AppError::from)?;
-    let password: String = prompt_input("Enter LDAP Password: ").map_err(AppError::from)?;
+    let username: String = prompt_input("Enter LDAP Username: ", false).map_err(AppError::from)?;
+    let password: String = prompt_input("Enter LDAP Password: ", true).map_err(AppError::from)?;
 
     let executable_path: std::path::PathBuf = env::current_exe()?;
     let service_manager: ServiceManager = ServiceManager::new(executable_path);

@@ -9,14 +9,14 @@ edition = "2021"
 regex = "1.11.1"
 reqwest = "0.12.12"
 tokio = { version = "1.43.0", features = ["full"] }
-keyring = { version = "3.6.1", features = [
+keyring = { version = "3.6.2", features = [
     "apple-native",
     "sync-secret-service",
 ] }
 dirs = "6.0.0"
-thiserror = "2.0.11"
-notify-rust = "4.11.4"
-log = "0.4.25"
+thiserror = "2.0.12"
+notify-rust = "4.11.5"
+log = "0.4.26"
 env_logger = "0.11.6"
 [target.x86_64-unknown-linux-musl.dependencies]
 openssl = { version = "0.10.70", features = ["vendored"] }

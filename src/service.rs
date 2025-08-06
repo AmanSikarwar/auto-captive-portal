@@ -89,9 +89,11 @@ impl ServiceManager {
     }
 
     #[cfg(target_os = "linux")]
-    pub fn create_service(&self) -> io::Result<()> {
+    pub fn create_service(&self) -> Result<()> {
         let service_name = SERVICE_NAME;
-        let service_dir = dirs::home_dir().unwrap().join(".config/systemd/user");
+        let service_dir = dirs::home_dir()
+            .ok_or_else(|| AppError::Service("Home directory not found".into()))?
+            .join(".config/systemd/user");
 
         fs::create_dir_all(&service_dir)?;
 
@@ -113,18 +115,54 @@ WantedBy=default.target"#,
         let service_path = service_dir.join(format!("{}.service", service_name));
         fs::write(&service_path, service_content)?;
 
-        std::process::Command::new("systemctl")
+        info!("Creating systemd service at {}", service_path.display());
+
+        // Reload daemon
+        let output = std::process::Command::new("systemctl")
             .args(["--user", "daemon-reload"])
             .output()?;
 
-        std::process::Command::new("systemctl")
+        if !output.status.success() {
+            error!(
+                "Failed to reload systemd daemon: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Err(AppError::Service(
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            ));
+        }
+
+        // Enable service
+        let output = std::process::Command::new("systemctl")
             .args(["--user", "enable", service_name])
             .output()?;
 
-        std::process::Command::new("systemctl")
+        if !output.status.success() {
+            error!(
+                "Failed to enable service: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Err(AppError::Service(
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            ));
+        }
+
+        // Start service
+        let output = std::process::Command::new("systemctl")
             .args(["--user", "start", service_name])
             .output()?;
 
+        if !output.status.success() {
+            error!(
+                "Failed to start service: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Err(AppError::Service(
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            ));
+        }
+
+        info!("Service created, enabled, and started successfully.");
         Ok(())
     }
 }

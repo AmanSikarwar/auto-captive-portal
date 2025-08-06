@@ -158,16 +158,79 @@ async fn run() -> Result<()> {
     }
 }
 
+async fn health_check() -> Result<()> {
+    info!("Performing health check...");
+
+    match get_credentials() {
+        Ok((username, _)) => {
+            info!("✓ Credentials found for user: {username}");
+        }
+        Err(e) => {
+            error!("✗ Failed to retrieve credentials: {e}");
+            return Err(e);
+        }
+    }
+
+    match captive_portal::check_captive_portal().await {
+        Ok(Some((url, magic))) => {
+            info!("✓ Captive portal detected at: {url}");
+            info!("✓ Magic value extracted: {magic}");
+        }
+        Ok(None) => {
+            info!("✓ No captive portal detected (internet is accessible)");
+        }
+        Err(e) => {
+            error!("✗ Network check failed: {e}");
+            return Err(e);
+        }
+    }
+
+    info!("Health check completed successfully");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::init();
 
-    if env::args().nth(1).as_deref() == Some("setup") {
-        if let Err(e) = setup().await {
-            error!("Setup failed: {e}");
+    let args: Vec<String> = env::args().collect();
+
+    match args.get(1).map(|s| s.as_str()) {
+        Some("setup") => {
+            if let Err(e) = setup().await {
+                error!("Setup failed: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Some("health") | Some("check") => {
+            if let Err(e) = health_check().await {
+                error!("Health check failed: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Some("--help") | Some("-h") => {
+            println!("Auto Captive Portal Login Service");
+            println!();
+            println!("USAGE:");
+            println!("    acp [SUBCOMMAND]");
+            println!();
+            println!("SUBCOMMANDS:");
+            println!("    setup    Configure credentials and install service");
+            println!("    health   Perform health check");
+            println!("    help     Print this help message");
+            println!();
+            println!("Running without arguments starts the service.");
+            return;
+        }
+        Some(_) => {
+            error!("Unknown command. Use 'acp --help' for usage information.");
             std::process::exit(1);
         }
-        return;
+        None => {
+            // Default: run the service
+        }
     }
 
     if let Err(e) = run().await {

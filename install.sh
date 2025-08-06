@@ -46,32 +46,86 @@ uninstall_service() {
 
     if [[ "$os_type" == "Darwin" ]]; then  # macOS
         echo "  Stopping and unloading LaunchAgent..."
+        local plist_path="$HOME/Library/LaunchAgents/$service_name.plist"
+        
+        # Check if service is loaded and unload it
         if launchctl list | grep -q "$service_name"; then
-            launchctl bootout gui/"$(id -u)"/"$service_name" 2>/dev/null || true
+            echo "    Unloading service..."
+            if ! launchctl unload "$plist_path" 2>/dev/null; then
+                echo "    Warning: Failed to unload service (it may not be running)"
+            fi
         fi
-        rm -f "$HOME/Library/LaunchAgents/$service_name.plist"
-        launchctl unload "$HOME/Library/LaunchAgents/$service_name.plist" 2>/dev/null || true
+        
+        # Remove plist file
+        if [[ -f "$plist_path" ]]; then
+            echo "    Removing plist file..."
+            rm -f "$plist_path"
+        else
+            echo "    Plist file not found (may already be removed)"
+        fi
+        
     elif [[ "$os_type" == "Linux" ]]; then  # Linux (systemd)
         echo "  Stopping and disabling systemd service..."
-        systemctl --user stop "$service_name" 2>/dev/null || true
-        systemctl --user disable "$service_name" 2>/dev/null || true
-        rm -f "$HOME/.config/systemd/user/$service_name.service"
-        systemctl --user daemon-reload 2>/dev/null || true
+        
+        # Check if systemctl is available
+        if ! command -v systemctl &> /dev/null; then
+            echo "    Warning: systemctl not found, skipping service removal"
+        else
+            # Stop the service
+            if systemctl --user is-active --quiet "$service_name" 2>/dev/null; then
+                echo "    Stopping service..."
+                systemctl --user stop "$service_name" 2>/dev/null || echo "    Warning: Failed to stop service"
+            fi
+            
+            # Disable the service
+            if systemctl --user is-enabled --quiet "$service_name" 2>/dev/null; then
+                echo "    Disabling service..."
+                systemctl --user disable "$service_name" 2>/dev/null || echo "    Warning: Failed to disable service"
+            fi
+            
+            # Remove service file
+            local service_file="$HOME/.config/systemd/user/$service_name.service"
+            if [[ -f "$service_file" ]]; then
+                echo "    Removing service file..."
+                rm -f "$service_file"
+            fi
+            
+            # Reload daemon
+            echo "    Reloading systemd daemon..."
+            systemctl --user daemon-reload 2>/dev/null || echo "    Warning: Failed to reload systemd daemon"
+        fi
     else
         echo "Error: Unsupported platform for uninstallation." >&2
         return 1
     fi
 
     echo "  Removing credentials from keychain/secrets..."
-    security delete-generic-password -s "$service_name" -a "ldap_username" 2>/dev/null || true # macOS
-    security delete-generic-password -s "$service_name" -a "ldap_password" 2>/dev/null || true # macOS
-    secret-tool clear --quiet service="$service_name" login="ldap_username" 2>/dev/null || true # Linux
-    secret-tool clear --quiet service="$service_name" login="ldap_password" 2>/dev/null || true # Linux
+    if [[ "$os_type" == "Darwin" ]]; then
+        # macOS keychain
+        security delete-generic-password -s "$service_name" -a "ldap_username" 2>/dev/null || echo "    Warning: Username not found in keychain"
+        security delete-generic-password -s "$service_name" -a "ldap_password" 2>/dev/null || echo "    Warning: Password not found in keychain"
+    elif [[ "$os_type" == "Linux" ]]; then
+        # Linux secret service
+        if command -v secret-tool &> /dev/null; then
+            secret-tool clear service "$service_name" username "ldap_username" 2>/dev/null || echo "    Warning: Username not found in secret service"
+            secret-tool clear service "$service_name" username "ldap_password" 2>/dev/null || echo "    Warning: Password not found in secret service"
+        else
+            echo "    Warning: secret-tool not found, cannot clear credentials"
+        fi
+    fi
 
     echo "  Removing binary from /usr/local/bin..."
-    sudo rm -f /usr/local/bin/acp 2>/dev/null || true
+    if [[ -f "/usr/local/bin/acp" ]]; then
+        if sudo rm -f /usr/local/bin/acp 2>/dev/null; then
+            echo "    Binary removed successfully"
+        else
+            echo "    Warning: Failed to remove binary (may require manual removal)"
+        fi
+    else
+        echo "    Binary not found (may already be removed)"
+    fi
 
-    echo "Auto Captive Portal Service uninstalled."
+    echo "Auto Captive Portal Service uninstalled successfully."
     return 0
 }
 
@@ -86,8 +140,7 @@ install_service() {
     echo "Installing Auto Captive Portal Service..."
 
     echo "  Moving binary to /usr/local/bin..."
-    sudo mv /tmp/acp /usr/local/bin/acp
-    if [ $? -ne 0 ]; then
+    if ! sudo mv /tmp/acp /usr/local/bin/acp; then
         echo "Error: Failed to move binary to /usr/local/bin. Please ensure you have sudo privileges." >&2
         return 1
     fi
@@ -95,14 +148,35 @@ install_service() {
     echo "  Binary installed to /usr/local/bin/acp"
 
     echo "  Running setup (storing credentials in keychain)..."
-    /usr/local/bin/acp setup
-    if [ $? -ne 0 ]; then
+    if ! /usr/local/bin/acp setup; then
         echo "Error: Setup process failed. Please check the output above for errors." >&2
         return 1
     fi
     echo "  Credentials stored successfully."
 
-    echo "Auto Captive Portal Service installed and running!"
+    # After setup, the service should already be created and started by the Rust application
+    # Let's verify the service is running
+    echo "  Verifying service status..."
+    
+    if [[ "$os_type" == "Darwin" ]]; then
+        if launchctl list | grep -q "$service_name"; then
+            echo "  Service is running successfully."
+        else
+            echo "  Warning: Service may not be running. Check logs for details."
+        fi
+    elif [[ "$os_type" == "Linux" ]]; then
+        if command -v systemctl &> /dev/null; then
+            if systemctl --user is-active --quiet "$service_name" 2>/dev/null; then
+                echo "  Service is running successfully."
+            else
+                echo "  Warning: Service may not be running. Check logs for details."
+            fi
+        else
+            echo "  Warning: Cannot verify service status - systemctl not available."
+        fi
+    fi
+
+    echo "Auto Captive Portal Service installed!"
     return 0
 }
 
@@ -120,13 +194,33 @@ fi
 
 # Check if jq is installed
 if ! command -v jq &> /dev/null; then
-    echo "Error: jq is required. Please install it (e.g., apt install jq, brew install jq)." >&2
+    echo "Error: jq is required. Please install it:" >&2
+    echo "  - On macOS: brew install jq" >&2
+    echo "  - On Linux: apt install jq (Debian/Ubuntu) or yum install jq (CentOS/RHEL)" >&2
     exit 1
 fi
 
-# Check if user has sudo privileges (early check, but not for setup itself)
+# Check platform-specific requirements
+case "$(uname -s)" in
+    "Darwin")
+        # Check if we have access to security command for keychain
+        if ! command -v security &> /dev/null; then
+            echo "Error: security command not found. This is required for macOS keychain access." >&2
+            exit 1
+        fi
+        ;;
+    "Linux")
+        # On Linux, we should have either secret-tool or gnome-keyring available
+        if ! command -v secret-tool &> /dev/null && ! command -v gnome-keyring &> /dev/null; then
+            echo "Warning: Neither secret-tool nor gnome-keyring found. Credential storage may not work properly." >&2
+            echo "  Install with: apt install libsecret-tools (Debian/Ubuntu)" >&2
+        fi
+        ;;
+esac
+
+# Early sudo check (but don't exit if it fails, as user might provide password later)
 if ! sudo -n true 2>/dev/null; then
-    echo "Error: This script requires sudo for final binary installation and service management. Run with sudo access if prompted." >&2
+    echo "Note: This script will require sudo privileges for binary installation."
 fi
 
 # Get latest tag with retry mechanism

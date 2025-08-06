@@ -4,19 +4,21 @@ use regex::Regex;
 use reqwest::StatusCode;
 use std::collections::HashMap;
 
-pub async fn login(_portal_url: &str, username: &str, password: &str, magic: &str) -> Result<()> {
-    info!(
-        "Attempting to login to captive portal via POST request at: {}",
+pub async fn login(portal_url: &str, username: &str, password: &str, magic: &str) -> Result<()> {
+    let login_url = if portal_url.contains("login.iitmandi.ac.in") {
         "https://login.iitmandi.ac.in:1003/portal?"
-    );
+    } else {
+        portal_url
+    };
+
+    info!("Attempting to login to captive portal via POST request at: {login_url}");
 
     let client = reqwest::Client::new();
-    let login_url = "https://login.iitmandi.ac.in:1003/portal?";
 
     let mut form_data = HashMap::new();
     form_data.insert("username", username);
     form_data.insert("password", password);
-    form_data.insert("4Tredir", "https://login.iitmandi.ac.in:1003/portal?");
+    form_data.insert("4Tredir", login_url);
     form_data.insert("magic", magic);
 
     let resp = client.post(login_url).form(&form_data).send().await?;

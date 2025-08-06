@@ -28,12 +28,11 @@ pub async fn login(_portal_url: &str, username: &str, password: &str, magic: &st
         Ok(())
     } else {
         let status = resp.status();
-        error!("Login request failed. Status: {}", status);
+        error!("Login request failed. Status: {status}");
         let error_body = resp.text().await?;
-        error!("Response Body: {:?}", error_body);
+        error!("Response Body: {error_body:?}");
         Err(AppError::LoginFailed(format!(
-            "Login failed with status code: {}",
-            status
+            "Login failed with status code: {status}"
         )))
     }
 }
@@ -62,13 +61,13 @@ pub async fn check_captive_portal() -> Result<Option<(String, String)>> {
             let captive_portal_url_option: Option<String> = extract_captive_portal_url(&html);
 
             if let Some(captive_portal_url) = captive_portal_url_option {
-                info!("Captive portal URL detected: {}", captive_portal_url);
+                info!("Captive portal URL detected: {captive_portal_url}");
                 let portal_page_resp = client.get(&captive_portal_url).send().await?;
                 if portal_page_resp.status().is_success() {
                     let portal_html = portal_page_resp.text().await?;
                     let magic_value_option = extract_magic_value(&portal_html);
                     if let Some(magic_value) = magic_value_option {
-                        info!("Extracted magic value: {}", magic_value);
+                        info!("Extracted magic value: {magic_value}");
                         Ok(Some((captive_portal_url, magic_value)))
                     } else {
                         error!("Could not extract magic value from captive portal page.");

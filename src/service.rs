@@ -36,7 +36,7 @@ impl ServiceManager {
         let plist_path: PathBuf = dirs::home_dir()
             .ok_or_else(|| AppError::Service("Home directory not found".into()))?
             .join("Library/LaunchAgents")
-            .join(format!("{}.plist", SERVICE_NAME));
+            .join(format!("{SERVICE_NAME}.plist"));
 
         fs::create_dir_all(plist_path.parent().unwrap())?;
 
@@ -129,8 +129,9 @@ WantedBy=default.target"#,
     }
 }
 
+#[allow(dead_code)]
 pub async fn restart_service() -> Result<()> {
-    info!("Restarting service: {}", SERVICE_NAME);
+    info!("Restarting service: {SERVICE_NAME}");
 
     #[cfg(target_os = "linux")]
     {

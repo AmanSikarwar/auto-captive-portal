@@ -7,7 +7,7 @@ use console::Term;
 use error::{AppError, Result};
 use keyring::Entry;
 use log::{error, info};
-use service::{ServiceManager, SERVICE_NAME};
+use service::{SERVICE_NAME, ServiceManager};
 use std::env;
 use tokio::sync::mpsc;
 
@@ -37,7 +37,7 @@ fn prompt_input(prompt: &str, is_password: bool) -> std::io::Result<String> {
 async fn check_and_login(username: &str, password: &str) -> Result<bool> {
     match captive_portal::check_captive_portal().await {
         Ok(Some((url, magic))) => {
-            info!("Captive portal detected at {}", url);
+            info!("Captive portal detected at {url}");
             match captive_portal::login(&url, username, password, &magic).await {
                 Ok(_) => {
                     notifications::send_notification("Logged into captive portal successfully.")
@@ -46,7 +46,7 @@ async fn check_and_login(username: &str, password: &str) -> Result<bool> {
                     Ok(true)
                 }
                 Err(e) => {
-                    error!("Login failed: {}", e);
+                    error!("Login failed: {e}");
                     Err(e)
                 }
             }
@@ -56,7 +56,7 @@ async fn check_and_login(username: &str, password: &str) -> Result<bool> {
             Ok(false)
         }
         Err(e) => {
-            error!("Portal check failed: {}", e);
+            error!("Portal check failed: {e}");
             Err(e)
         }
     }
@@ -106,7 +106,7 @@ async fn run() -> Result<()> {
         if has_relevant_change {
             info!("Relevant network change detected: a new interface or IP address was added.");
             if let Err(e) = tx.send(()) {
-                error!("Failed to send network change signal: {}", e);
+                error!("Failed to send network change signal: {e}");
             }
         } else {
             info!("Ignoring irrelevant network change (e.g., interface or IP removed).");
@@ -164,14 +164,14 @@ async fn main() {
 
     if env::args().nth(1).as_deref() == Some("setup") {
         if let Err(e) = setup().await {
-            error!("Setup failed: {}", e);
+            error!("Setup failed: {e}");
             std::process::exit(1);
         }
         return;
     }
 
     if let Err(e) = run().await {
-        error!("Application error: {}", e);
+        error!("Application error: {e}");
         std::process::exit(1);
     }
 }

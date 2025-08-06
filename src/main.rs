@@ -23,14 +23,14 @@ fn get_credentials() -> Result<(String, String)> {
 
 fn prompt_input(prompt: &str, is_password: bool) -> std::io::Result<String> {
     let term = Term::stdout();
-    term.write_str(prompt)?; // Write the prompt to the terminal
-    term.flush()?;          // Ensure the prompt is displayed immediately
+    term.write_str(prompt)?;
+    term.flush()?;
     let input = if is_password {
-        term.read_secure_line()? // Read password without echoing
+        term.read_secure_line()?
     } else {
-        term.read_line()?        // Read username with visible input
+        term.read_line()?
     };
-    Ok(input.trim().to_string()) // Trim whitespace and return
+    Ok(input.trim().to_string())
 }
 
 async fn setup() -> Result<()> {

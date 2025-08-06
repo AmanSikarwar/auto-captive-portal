@@ -70,27 +70,17 @@ journalctl --user -u acp
 
 ## Uninstallation
 
-To uninstall the Auto Captive Portal Login service and remove the binary, you have two options:
-
-### Option 1: Using the install script (recommended)
+To uninstall the Auto Captive Portal Login service and remove the binary, run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/amansikarwar/auto-captive-portal/main/install.sh | bash -s uninstall
 ```
 
-### Option 2: Using the dedicated uninstall script
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/amansikarwar/auto-captive-portal/main/uninstall.sh | bash
-```
-
-Both methods will:
+This will:
 
 - Stop and remove the service.
 - Delete the stored credentials.
 - Remove the `acp` binary from `/usr/local/bin/`.
-
-The dedicated uninstall script provides additional confirmation prompts and detailed feedback.
 
 ## Troubleshooting
 

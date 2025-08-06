@@ -9,6 +9,7 @@ use keyring::Entry;
 use log::{error, info};
 use service::{ServiceManager, SERVICE_NAME};
 use std::env;
+use tokio::sync::mpsc;
 
 fn get_credentials() -> Result<(String, String)> {
     let username_entry: Entry =
@@ -33,6 +34,34 @@ fn prompt_input(prompt: &str, is_password: bool) -> std::io::Result<String> {
     Ok(input.trim().to_string())
 }
 
+async fn check_and_login(username: &str, password: &str) -> Result<bool> {
+    match captive_portal::check_captive_portal().await {
+        Ok(Some((url, magic))) => {
+            info!("Captive portal detected at {}", url);
+            match captive_portal::login(&url, username, password, &magic).await {
+                Ok(_) => {
+                    notifications::send_notification("Logged into captive portal successfully.")
+                        .await;
+                    info!("Logged into captive portal successfully.");
+                    Ok(true)
+                }
+                Err(e) => {
+                    error!("Login failed: {}", e);
+                    Err(e)
+                }
+            }
+        }
+        Ok(None) => {
+            info!("No captive portal detected.");
+            Ok(false)
+        }
+        Err(e) => {
+            error!("Portal check failed: {}", e);
+            Err(e)
+        }
+    }
+}
+
 async fn setup() -> Result<()> {
     info!("Starting setup for Auto Captive Portal...");
 
@@ -51,39 +80,81 @@ async fn setup() -> Result<()> {
 
 async fn run() -> Result<()> {
     let (username, password) = get_credentials()?;
-    const MAX_DELAY: u64 = 1800;
-    const MIN_DELAY: u64 = 10;
 
-    let mut current_sleep_duration = MIN_DELAY;
+    const MAX_DELAY_SECS: u64 = 1800;
+    const MIN_DELAY_SECS: u64 = 10;
+    let mut sleep_duration: std::time::Duration = tokio::time::Duration::from_secs(MIN_DELAY_SECS);
 
-    loop {
-        match captive_portal::check_captive_portal().await {
-            Ok(Some((url, magic))) => {
-                info!("Captive portal detected at {}", url);
-                if let Err(e) = captive_portal::login(&url, &username, &password, &magic).await {
-                    error!("Login failed: {}", e);
-                    service::restart_service().await?;
-                } else {
-                    notifications::send_notification(
-                        "Captive portal detected and logged in successfully",
-                    )
-                    .await;
-                    info!("Logged into captive portal successfully.");
-                    current_sleep_duration = MAX_DELAY;
-                }
-            }
-            Ok(None) => {
-                info!("No captive portal detected.");
-                current_sleep_duration = (current_sleep_duration / 2).max(MIN_DELAY);
-            }
-            Err(e) => {
-                error!("Portal check failed: {}", e);
-                service::restart_service().await?;
-            }
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    let _watcher_handle = netwatcher::watch_interfaces(move |update| {
+        if update.diff.added.is_empty()
+            && update.diff.removed.is_empty()
+            && update.diff.modified.is_empty()
+        {
+            info!("Watcher initialized with current network state.");
+            return;
         }
 
-        info!("Next check will be in {} seconds.", current_sleep_duration);
-        tokio::time::sleep(tokio::time::Duration::from_secs(current_sleep_duration)).await;
+        let has_relevant_change = !update.diff.added.is_empty()
+            || update
+                .diff
+                .modified
+                .values()
+                .any(|d| !d.addrs_added.is_empty());
+
+        if has_relevant_change {
+            info!("Relevant network change detected: a new interface or IP address was added.");
+            if let Err(e) = tx.send(()) {
+                error!("Failed to send network change signal: {}", e);
+            }
+        } else {
+            info!("Ignoring irrelevant network change (e.g., interface or IP removed).");
+        }
+    })
+    .map_err(|e| AppError::Service(e.to_string()))?;
+
+    info!("Performing initial check for captive portal on startup...");
+    if let Ok(true) = check_and_login(&username, &password).await {
+        sleep_duration = tokio::time::Duration::from_secs(MAX_DELAY_SECS);
+    }
+
+    info!("Starting hybrid network watcher and polling loop...");
+
+    loop {
+        info!("Next poll in {:.0?} seconds.", sleep_duration.as_secs_f32());
+
+        tokio::select! {
+            biased;
+
+            Some(_) = rx.recv() => {
+                info!("Received signal from network watcher. Triggering immediate check.");
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+                if let Ok(true) = check_and_login(&username, &password).await {
+                    sleep_duration = tokio::time::Duration::from_secs(MAX_DELAY_SECS);
+                } else {
+                    sleep_duration = tokio::time::Duration::from_secs(MIN_DELAY_SECS);
+                }
+            },
+
+            _ = tokio::time::sleep(sleep_duration) => {
+                info!("Polling interval elapsed. Checking for captive portal...");
+                match check_and_login(&username, &password).await {
+                    Ok(true) => {
+                        sleep_duration = tokio::time::Duration::from_secs(MAX_DELAY_SECS);
+                    },
+                    Ok(false) => {
+                        let current_secs = sleep_duration.as_secs();
+                        let next_secs = (current_secs / 2).max(MIN_DELAY_SECS);
+                        sleep_duration = tokio::time::Duration::from_secs(next_secs);
+                    },
+                    Err(_) => {
+                        sleep_duration = tokio::time::Duration::from_secs(MIN_DELAY_SECS);
+                    }
+                }
+            },
+        }
     }
 }
 

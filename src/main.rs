@@ -51,6 +51,10 @@ async fn setup() -> Result<()> {
 
 async fn run() -> Result<()> {
     let (username, password) = get_credentials()?;
+    const MAX_DELAY: u64 = 1800;
+    const MIN_DELAY: u64 = 10;
+
+    let mut current_sleep_duration = MIN_DELAY;
 
     loop {
         match captive_portal::check_captive_portal().await {
@@ -65,15 +69,21 @@ async fn run() -> Result<()> {
                     )
                     .await;
                     info!("Logged into captive portal successfully.");
+                    current_sleep_duration = MAX_DELAY;
                 }
             }
-            Ok(None) => info!("No captive portal detected."),
+            Ok(None) => {
+                info!("No captive portal detected.");
+                current_sleep_duration = (current_sleep_duration / 2).max(MIN_DELAY);
+            }
             Err(e) => {
                 error!("Portal check failed: {}", e);
                 service::restart_service().await?;
             }
         }
-        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+
+        info!("Next check will be in {} seconds.", current_sleep_duration);
+        tokio::time::sleep(tokio::time::Duration::from_secs(current_sleep_duration)).await;
     }
 }
 

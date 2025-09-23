@@ -18,7 +18,7 @@ thiserror = "2.0.16"
 notify-rust = "4.11.7"
 log = "0.4.28"
 env_logger = "0.11.8"
-console = "0.16.0"
+console = "0.16.1"
 netwatcher = "0.4.0"
 [target.x86_64-unknown-linux-musl.dependencies]
 openssl = { version = "0.10.73", features = ["vendored"] }

@@ -1,6 +1,16 @@
-# Auto Captive Portal Login
+# Auto Captive Portal (ACP)
 
-This Rust application automates authentication for the IIT Mandi captive portal. It runs as a background service, checking for captive portals every 10 seconds, logging in automatically when detected, and sending desktop notifications upon successful login.
+A Rust-based daemon that automatically authenticates against IIT Mandi's captive portal. It runs as a background service with intelligent hybrid network monitoring (netwatcher + adaptive polling), secure credential storage, and desktop notifications.
+
+## Features
+
+- **🚀 Automatic Login**: Detects and authenticates with the captive portal instantly upon network changes
+- **🔄 Hybrid Monitoring**: Combines real-time network event detection with intelligent exponential backoff polling
+- **🔐 Secure Credentials**: Stores credentials in OS keychain (macOS Keychain / Linux Secret Service)
+- **🔔 Desktop Notifications**: Get notified when successfully logged in
+- **⚡ Smart Retry Logic**: Automatic retry with exponential backoff on login failures
+- **📊 Service Status**: Monitor service health and login statistics
+- **🎯 Cross-Platform**: Supports macOS (x86_64, ARM64) and Linux (x86_64)
 
 ## Prerequisites
 
@@ -12,7 +22,7 @@ This Rust application automates authentication for the IIT Mandi captive portal.
 
 ## Installation
 
-To install and set up the Auto Captive Portal Login service, run
+To install and set up the Auto Captive Portal Login service, run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/amansikarwar/auto-captive-portal/main/install.sh | bash
@@ -20,57 +30,157 @@ curl -fsSL https://raw.githubusercontent.com/amansikarwar/auto-captive-portal/ma
 
 This command will:
 
-- Download the latest `acp` binary for your platform from GitHub releases.
-- Install it to `/usr/local/bin/acp`.
-- Run the `setup` command, prompting you for your LDAP credentials to configure the service.
+1. Download the latest `acp` binary for your platform from GitHub releases
+2. Install it to `/usr/local/bin/acp`
+3. Prompt you for your LDAP credentials
+4. Store credentials securely in your OS keychain
+5. Create and start the background service
 
-**Note**: You will be prompted for your LDAP credentials during the setup process
+**Note**: You will be prompted for your LDAP credentials during the setup process.
 
 ### Supported Platforms
 
-- **Linux (x86_64)**
-- **macOS (x86_64)**
-- **macOS (arm64)**
+- **Linux (x86_64)** - Ubuntu, Debian, Fedora, CentOS, etc.
+- **macOS (x86_64)** - Intel-based Macs
+- **macOS (ARM64)** - Apple Silicon Macs (M1, M2, M3, etc.)
+
+## Usage
+
+### Commands
+
+```bash
+# Show service status and statistics
+acp status
+
+# Update stored credentials
+acp update-credentials
+
+# Perform health check (verify credentials, portal detection, connectivity)
+acp health
+
+# Show help and available commands
+acp --help
+
+# Run daemon directly (for testing)
+acp
+```
+
+### Service Status Example
+
+The `acp status` command provides comprehensive information:
+
+```text
+╔══════════════════════════════════════════════════════╗
+║     Auto Captive Portal - Service Status             ║
+╚══════════════════════════════════════════════════════╝
+
+Credentials:        ✓ Configured (user: your_username)
+Service:            ✓ Running
+Internet:           ✓ Connected
+Portal Status:      ✓ Not detected
+
+─────────────────────────────────────────────────────
+Last Check:         2 minutes ago
+Last Login:         15 minutes ago
+Last Portal:        https://login.iitmandi.ac.in:1003/portal
+```
 
 ## Platform-specific Details
 
 ### macOS
 
-The service runs as a LaunchAgent and starts automatically on login.
+The service runs as a **LaunchAgent** (`com.user.acp`) and starts automatically on login.
 
-To manually manage the service:
+**Manual Service Management:**
 
 ```bash
-# Start
+# Check if service is running
+launchctl list | grep com.user.acp
+
+# Start service
 launchctl load ~/Library/LaunchAgents/com.user.acp.plist
 
-# Stop
+# Stop service
 launchctl unload ~/Library/LaunchAgents/com.user.acp.plist
 
-# View logs
-log show --predicate 'processImagePath contains "acp"'
+# View logs (last 5 minutes)
+log show --predicate 'processImagePath contains "acp"' --last 5m
+
+# Follow logs in real-time
+log stream --predicate 'processImagePath contains "acp"'
 ```
+
+**Credentials Storage:** Uses macOS Keychain (`security` command)
 
 ### Linux
 
-The service runs as a systemd user service.
+The service runs as a **systemd user service** (`acp.service`).
 
-To manually manage the service:
+**Manual Service Management:**
 
 ```bash
-# Start
+# Check service status
+systemctl --user status acp
+
+# Start service
 systemctl --user start acp
 
-# Stop
+# Stop service
 systemctl --user stop acp
 
-# View logs
-journalctl --user -u acp
+# Restart service
+systemctl --user restart acp
+
+# View logs (last 50 lines)
+journalctl --user -u acp -n 50
+
+# Follow logs in real-time
+journalctl --user -u acp -f
 ```
+
+**Credentials Storage:** Uses Linux Secret Service (`libsecret`)
+
+## How It Works
+
+### Network Monitoring Architecture
+
+ACP uses a **hybrid monitoring approach** for optimal responsiveness and resource efficiency:
+
+1. **Real-time Network Event Detection** (via `netwatcher` library)
+   - Monitors network interface changes (new interfaces, IP address assignments)
+   - Triggers immediate portal check (after 3-second debounce delay)
+   - Detects: Wi-Fi connections, VPN changes, ethernet connections
+
+2. **Adaptive Polling** (exponential backoff)
+   - **Portal detected**: Checks every 10 seconds
+   - **Successfully logged in**: Checks every 30 minutes (1800 seconds)
+   - **No portal found**: Gradually decreases interval (exponential decay to 10s minimum)
+
+### Authentication Flow
+
+1. **Portal Detection**: Requests `http://clients3.google.com/generate_204`
+   - No portal: Receives 204 response → Internet accessible
+   - Portal present: Receives 200 redirect → Extract portal URL and magic value
+
+2. **Login Attempt**: POSTs to `https://login.iitmandi.ac.in:1003/portal?` with:
+   - Username and password (from keychain)
+   - Magic value (extracted from portal HTML)
+   - Redirect URL
+
+3. **Verification**: Confirms internet connectivity after login
+   - Success → Desktop notification + Set 30-minute poll interval
+   - Failure → Retry with exponential backoff (max 3 attempts)
+
+### Credential Security
+
+- **macOS**: Stored in macOS Keychain using `security` command
+- **Linux**: Stored in Secret Service (GNOME Keyring, KWallet, etc.) using `libsecret`
+- **No plaintext**: Credentials never stored in configuration files
+- **OS-level encryption**: Leverages OS native secure storage
 
 ## Uninstallation
 
-To uninstall the Auto Captive Portal Login service and remove the binary, run:
+To completely remove the Auto Captive Portal service:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/amansikarwar/auto-captive-portal/main/install.sh | bash -s uninstall
@@ -78,24 +188,114 @@ curl -fsSL https://raw.githubusercontent.com/amansikarwar/auto-captive-portal/ma
 
 This will:
 
-- Stop and remove the service.
-- Delete the stored credentials.
-- Remove the `acp` binary from `/usr/local/bin/`.
+1. Stop and remove the background service
+2. Delete stored credentials from keychain
+3. Remove the `acp` binary from `/usr/local/bin/`
+4. Clean up all service configuration files
 
 ## Troubleshooting
 
-If you encounter issues during installation or while running the service, try the following:
+### Common Issues
 
-- **Check Logs**:
-  - macOS: `log show --predicate 'processImagePath contains "acp"'`
-  - Linux: `journalctl --user -u acp`
-- **Ensure Network Connectivity**: The installation script requires internet access to download the binary.
-- **Verify Service Status**:
-  - macOS: `launchctl list | grep com.user.acp`
-  - Linux: `systemctl --user status acp`
-- **Re-run Setup**: If credentials are incorrect, run `/usr/local/bin/acp setup` to re-enter them.
-- **Check Permissions**: Ensure you have sudo privileges for moving the binary to `/usr/local/bin/`.
+| Issue | Solution |
+|-------|----------|
+| **"Keyring error"** or **"Credentials not found"** | Run `acp setup` to store credentials |
+| **Service not running** | Check logs (see platform-specific commands above) |
+| **Login failed** | Run `acp update-credentials` to update credentials |
+| **Portal URL/magic extraction fails** | Portal format may have changed - check `captive_portal.rs` |
+| **No notifications** | Check notification permissions for the application |
+
+### Diagnostic Commands
+
+```bash
+# Check service health and connectivity
+acp health
+
+# View detailed service status
+acp status
+
+# Check logs
+# macOS:
+log show --predicate 'processImagePath contains "acp"' --last 5m
+
+# Linux:
+journalctl --user -u acp -n 50
+```
+
+### Manual Testing
+
+To test the service without installing:
+
+```bash
+# Build from source
+cargo build --release
+
+# Run setup (stores credentials)
+./target/release/acp-script setup
+
+# Run daemon directly
+RUST_LOG=INFO ./target/release/acp-script
+
+# Or run health check
+./target/release/acp-script health
+```
+
+## Development
+
+### Building from Source
+
+```bash
+# Clone repository
+git clone https://github.com/amansikarwar/auto-captive-portal.git
+cd auto-captive-portal
+
+# Build release binary
+cargo build --release
+
+# Binary will be at: target/release/acp-script
+```
+
+### Cross-Compilation for Release
+
+The project uses GitHub Actions for cross-platform builds:
+
+```yaml
+# Targets:
+- x86_64-unknown-linux-gnu    → acp-script-linux-amd64
+- x86_64-apple-darwin         → acp-script-macos-x86_64
+- aarch64-apple-darwin        → acp-script-macos-arm64
+```
+
+### Linux Build Requirements
+
+For notification support on Linux:
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install libgtk-3-dev libayatana-appindicator3-dev
+
+# Fedora/RHEL
+sudo dnf install gtk3-devel libappindicator-gtk3-devel
+```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+### Areas for Improvement
+
+- Support for additional captive portal formats
+- Enhanced error reporting and diagnostics
+- Additional platform support (Windows, BSD)
+- Configuration file support for advanced settings
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+- Built with [Rust](https://www.rust-lang.org/)
+- Network monitoring via [netwatcher](https://github.com/mullvad/netwatch)
+- Secure credential storage via [keyring-rs](https://github.com/hwchen/keyring-rs)
+- Desktop notifications via [notify-rust](https://github.com/hoodie/notify-rust)

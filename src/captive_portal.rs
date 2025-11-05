@@ -4,6 +4,9 @@ use regex::Regex;
 use reqwest::StatusCode;
 use std::collections::HashMap;
 
+const MAX_LOGIN_RETRIES: u32 = 3;
+const INITIAL_RETRY_DELAY_SECS: u64 = 2;
+
 pub async fn verify_internet_connectivity() -> Result<bool> {
     let google_check_url: &str = "http://clients3.google.com/generate_204";
     let client: reqwest::Client = reqwest::Client::builder()
@@ -86,6 +89,49 @@ pub async fn login(portal_url: &str, username: &str, password: &str, magic: &str
     }
 }
 
+pub async fn login_with_retry(
+    portal_url: &str,
+    username: &str,
+    password: &str,
+    magic: &str,
+) -> Result<()> {
+    let mut last_error: Option<AppError> = None;
+
+    for attempt in 1..=MAX_LOGIN_RETRIES {
+        info!("Login attempt {}/{}", attempt, MAX_LOGIN_RETRIES);
+
+        match login(portal_url, username, password, magic).await {
+            Ok(()) => {
+                if attempt > 1 {
+                    info!("Login succeeded after {} attempt(s)", attempt);
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                last_error = Some(e);
+
+                if attempt < MAX_LOGIN_RETRIES {
+                    let delay_secs = INITIAL_RETRY_DELAY_SECS * 2u64.pow(attempt - 1);
+                    warn!(
+                        "Login attempt {} failed. Retrying in {} seconds...",
+                        attempt, delay_secs
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
+                } else {
+                    error!(
+                        "All {} login attempts failed. Giving up.",
+                        MAX_LOGIN_RETRIES
+                    );
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        AppError::LoginFailed("Login failed after all retry attempts".to_string())
+    }))
+}
+
 pub fn extract_captive_portal_url(html: &str) -> Option<String> {
     let re: Regex = Regex::new(r#"window\.location="([^"]*)""#).unwrap();
     re.captures(html)
@@ -100,11 +146,40 @@ pub fn extract_magic_value(html: &str) -> Option<String> {
 
 pub async fn check_captive_portal() -> Result<Option<(String, String)>> {
     let google_check_url: &str = "http://clients3.google.com/generate_204";
-    let client: reqwest::Client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
-    let google_check_resp: reqwest::Response = client.get(google_check_url).send().await?;
+    let max_check_retries = 2;
+    let mut last_error: Option<reqwest::Error> = None;
 
+    for attempt in 1..=max_check_retries {
+        let client: reqwest::Client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+
+        match client.get(google_check_url).send().await {
+            Ok(google_check_resp) => {
+                return check_portal_response(google_check_resp, &client).await;
+            }
+            Err(e) => {
+                last_error = Some(e);
+                if attempt < max_check_retries {
+                    warn!(
+                        "Portal check attempt {} failed. Retrying in 1 second...",
+                        attempt
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                } else {
+                    error!("All {} portal check attempts failed", max_check_retries);
+                }
+            }
+        }
+    }
+
+    Err(AppError::Network(last_error.unwrap()))
+}
+
+async fn check_portal_response(
+    google_check_resp: reqwest::Response,
+    client: &reqwest::Client,
+) -> Result<Option<(String, String)>> {
     match google_check_resp.status() {
         StatusCode::NO_CONTENT => {
             info!("No captive portal detected: received expected 204 response");

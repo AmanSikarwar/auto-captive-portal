@@ -38,7 +38,7 @@ async fn check_and_login(username: &str, password: &str) -> Result<bool> {
     match captive_portal::check_captive_portal().await {
         Ok(Some((url, magic))) => {
             info!("Captive portal detected at {url}");
-            match captive_portal::login(&url, username, password, &magic).await {
+            match captive_portal::login_with_retry(&url, username, password, &magic).await {
                 Ok(_) => {
                     notifications::send_notification("Logged into captive portal successfully.")
                         .await;
@@ -46,7 +46,7 @@ async fn check_and_login(username: &str, password: &str) -> Result<bool> {
                     Ok(true)
                 }
                 Err(e) => {
-                    error!("Login failed: {e}");
+                    error!("Login failed after all retry attempts: {e}");
                     Err(e)
                 }
             }

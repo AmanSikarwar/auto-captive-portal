@@ -81,6 +81,84 @@ async fn setup() -> Result<()> {
     Ok(())
 }
 
+async fn update_credentials() -> Result<()> {
+    println!("\n╔══════════════════════════════════════════════════════╗");
+    println!("║     Update Credentials - Auto Captive Portal         ║");
+    println!("╚══════════════════════════════════════════════════════╝\n");
+
+    match get_credentials() {
+        Ok((current_username, _)) => {
+            println!("Current username: {}\n", current_username);
+        }
+        Err(_) => {
+            println!("⚠  No credentials found. Use 'acp setup' instead.\n");
+            return Err(AppError::Service(
+                "No existing credentials found".to_string(),
+            ));
+        }
+    }
+
+    let username: String =
+        prompt_input("Enter new LDAP Username: ", false).map_err(AppError::from)?;
+    let password: String =
+        prompt_input("Enter new LDAP Password: ", true).map_err(AppError::from)?;
+
+    if username.trim().is_empty() {
+        return Err(AppError::Service("Username cannot be empty".to_string()));
+    }
+
+    if password.trim().is_empty() {
+        return Err(AppError::Service("Password cannot be empty".to_string()));
+    }
+
+    println!("\nValidating credentials...");
+    match captive_portal::check_captive_portal().await {
+        Ok(Some((url, magic))) => {
+            println!("Captive portal detected. Testing credentials...");
+
+            println!("Logging out from current session...");
+            let _ = captive_portal::logout().await;
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+            match captive_portal::login(&url, &username, &password, &magic).await {
+                Ok(_) => {
+                    println!("✓ Credentials validated successfully!");
+                }
+                Err(e) => {
+                    println!("✗ Credential validation failed: {}", e);
+                    println!("\nCredentials may be incorrect. Store anyway? (y/N): ");
+                    let response = prompt_input("", false).map_err(AppError::from)?;
+                    if response.to_lowercase() != "y" {
+                        println!("Credential update cancelled.");
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        Ok(None) => {
+            println!("⚠  No captive portal detected. Credentials cannot be validated.");
+            println!("Storing credentials anyway...");
+        }
+        Err(e) => {
+            println!(
+                "⚠  Portal check failed: {}. Storing credentials anyway...",
+                e
+            );
+        }
+    }
+
+    let executable_path: std::path::PathBuf = env::current_exe()?;
+    let service_manager: ServiceManager = ServiceManager::new(executable_path);
+    service_manager.store_credentials(&username, &password)?;
+
+    println!("\n✓ Credentials updated successfully!");
+    println!("\nℹ  The service will use the new credentials on the next login attempt.");
+    println!();
+
+    Ok(())
+}
+
 async fn run() -> Result<()> {
     let (username, password) = get_credentials()?;
 
@@ -375,6 +453,13 @@ async fn main() {
             }
             return;
         }
+        Some("update-credentials") => {
+            if let Err(e) = update_credentials().await {
+                error!("Credential update failed: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
         Some("status") => {
             if let Err(e) = show_status().await {
                 error!("Status check failed: {e}");
@@ -396,10 +481,11 @@ async fn main() {
             println!("    acp [SUBCOMMAND]");
             println!();
             println!("SUBCOMMANDS:");
-            println!("    setup    Configure credentials and install service");
-            println!("    status   Show service status and statistics");
-            println!("    health   Perform health check");
-            println!("    help     Print this help message");
+            println!("    setup               Configure credentials and install service");
+            println!("    update-credentials  Update stored LDAP credentials");
+            println!("    status              Show service status and statistics");
+            println!("    health              Perform health check");
+            println!("    help                Print this help message");
             println!();
             println!("Running without arguments starts the service.");
             return;

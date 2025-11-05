@@ -6,6 +6,36 @@ use std::collections::HashMap;
 
 const MAX_LOGIN_RETRIES: u32 = 3;
 const INITIAL_RETRY_DELAY_SECS: u64 = 2;
+const LOGOUT_URL: &str = "https://login.iitmandi.ac.in:1003/logout?";
+
+pub async fn logout() -> Result<()> {
+    info!(
+        "Attempting to logout from captive portal at: {}",
+        LOGOUT_URL
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+
+    match client.get(LOGOUT_URL).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_success() || status.is_redirection() {
+                info!("Logout request completed. Status: {}", status);
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                Ok(())
+            } else {
+                warn!("Logout request returned non-success status: {}", status);
+                Ok(())
+            }
+        }
+        Err(e) => {
+            warn!("Logout request failed (this is often expected): {}", e);
+            Ok(())
+        }
+    }
+}
 
 pub async fn verify_internet_connectivity() -> Result<bool> {
     let google_check_url: &str = "http://clients3.google.com/generate_204";
@@ -108,14 +138,15 @@ pub async fn login_with_retry(
                 return Ok(());
             }
             Err(e) => {
+                error!("Login attempt {} failed: {}", attempt, e);
                 last_error = Some(e);
 
                 if attempt < MAX_LOGIN_RETRIES {
+                    info!("Logging out before retry to ensure clean state...");
+                    let _ = logout().await;
+
                     let delay_secs = INITIAL_RETRY_DELAY_SECS * 2u64.pow(attempt - 1);
-                    warn!(
-                        "Login attempt {} failed. Retrying in {} seconds...",
-                        attempt, delay_secs
-                    );
+                    warn!("Retrying login in {} seconds...", delay_secs);
                     tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
                 } else {
                     error!(

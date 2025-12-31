@@ -1,18 +1,83 @@
 mod captive_portal;
 mod error;
+mod logging;
 mod notifications;
 mod service;
 
+use clap::{Parser, Subcommand};
 use console::Term;
 use error::{AppError, Result};
 use keyring::Entry;
 use log::{error, info};
-use service::{SERVICE_NAME, ServiceManager};
+use service::{ServiceManager, SERVICE_NAME};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
+
+/// Auto Captive Portal - Automatic captive portal login service for IIT Mandi
+#[derive(Parser)]
+#[command(name = "acp")]
+#[command(author, version, about, long_about = None)]
+#[command(propagate_version = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Configure credentials and install the service
+    Setup {
+        /// LDAP username (will prompt if not provided)
+        #[arg(short, long)]
+        username: Option<String>,
+    },
+
+    /// Update stored LDAP credentials
+    UpdateCredentials {
+        /// LDAP username (will prompt if not provided)
+        #[arg(short, long)]
+        username: Option<String>,
+    },
+
+    /// Show service status and statistics
+    Status,
+
+    /// Perform a health check
+    Health,
+
+    /// Logout from captive portal and optionally clear credentials
+    Logout {
+        /// Also clear stored credentials
+        #[arg(short, long)]
+        clear_credentials: bool,
+    },
+
+    /// Run the service (used internally by service managers)
+    #[command(hide = true)]
+    Run,
+
+    /// Windows service management commands
+    #[cfg(target_os = "windows")]
+    #[command(subcommand)]
+    Service(ServiceCommands),
+}
+
+/// Windows service management subcommands
+#[cfg(target_os = "windows")]
+#[derive(Subcommand)]
+enum ServiceCommands {
+    /// Install the Windows service
+    Install,
+    /// Uninstall the Windows service
+    Uninstall,
+    /// Start the Windows service
+    Start,
+    /// Stop the Windows service
+    Stop,
+}
 
 fn get_credentials() -> Result<(String, String)> {
     let username_entry: Entry =
@@ -23,6 +88,17 @@ fn get_credentials() -> Result<(String, String)> {
         username_entry.get_password().map_err(AppError::from)?,
         password_entry.get_password().map_err(AppError::from)?,
     ))
+}
+
+fn clear_credentials() -> Result<()> {
+    let username_entry = Entry::new(SERVICE_NAME, "ldap_username").map_err(AppError::from)?;
+    let password_entry = Entry::new(SERVICE_NAME, "ldap_password").map_err(AppError::from)?;
+
+    // Ignore errors if credentials don't exist
+    let _ = username_entry.delete_credential();
+    let _ = password_entry.delete_credential();
+
+    Ok(())
 }
 
 fn prompt_input(prompt: &str, is_password: bool) -> std::io::Result<String> {
@@ -65,10 +141,13 @@ async fn check_and_login(username: &str, password: &str) -> Result<bool> {
     }
 }
 
-async fn setup() -> Result<()> {
+async fn setup(username: Option<String>) -> Result<()> {
     info!("Starting setup for Auto Captive Portal...");
 
-    let username: String = prompt_input("Enter LDAP Username: ", false).map_err(AppError::from)?;
+    let username = match username {
+        Some(u) => u,
+        None => prompt_input("Enter LDAP Username: ", false).map_err(AppError::from)?,
+    };
     let password: String = prompt_input("Enter LDAP Password: ", true).map_err(AppError::from)?;
 
     let executable_path: std::path::PathBuf = env::current_exe()?;
@@ -81,7 +160,7 @@ async fn setup() -> Result<()> {
     Ok(())
 }
 
-async fn update_credentials() -> Result<()> {
+async fn update_credentials(username: Option<String>) -> Result<()> {
     println!("\n╔══════════════════════════════════════════════════════╗");
     println!("║     Update Credentials - Auto Captive Portal         ║");
     println!("╚══════════════════════════════════════════════════════╝\n");
@@ -98,8 +177,10 @@ async fn update_credentials() -> Result<()> {
         }
     }
 
-    let username: String =
-        prompt_input("Enter new LDAP Username: ", false).map_err(AppError::from)?;
+    let username = match username {
+        Some(u) => u,
+        None => prompt_input("Enter new LDAP Username: ", false).map_err(AppError::from)?,
+    };
     let password: String =
         prompt_input("Enter new LDAP Password: ", true).map_err(AppError::from)?;
 
@@ -156,6 +237,41 @@ async fn update_credentials() -> Result<()> {
     println!("\nℹ  The service will use the new credentials on the next login attempt.");
     println!();
 
+    Ok(())
+}
+
+async fn logout_command(clear_creds: bool) -> Result<()> {
+    println!("\n╔══════════════════════════════════════════════════════╗");
+    println!("║     Logout - Auto Captive Portal                     ║");
+    println!("╚══════════════════════════════════════════════════════╝\n");
+
+    println!("Logging out from captive portal...");
+
+    match captive_portal::logout().await {
+        Ok(_) => {
+            println!("✓ Logout request sent successfully.");
+            notifications::send_notification("Logged out from captive portal.").await;
+        }
+        Err(e) => {
+            println!("⚠  Logout request failed: {}", e);
+            println!("   (This may be expected if you're not currently logged in)");
+        }
+    }
+
+    if clear_creds {
+        println!("\nClearing stored credentials...");
+        match clear_credentials() {
+            Ok(_) => {
+                println!("✓ Credentials cleared successfully.");
+            }
+            Err(e) => {
+                println!("✗ Failed to clear credentials: {}", e);
+                return Err(e);
+            }
+        }
+    }
+
+    println!();
     Ok(())
 }
 
@@ -362,6 +478,29 @@ fn check_service_running() -> (bool, String) {
             Err(_) => (false, "Unknown".to_string()),
         }
     }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+
+        let output = Command::new("sc")
+            .args(["query", SERVICE_NAME])
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if stdout.contains("RUNNING") {
+                    (true, "Running".to_string())
+                } else if stdout.contains("STOPPED") {
+                    (false, "Stopped".to_string())
+                } else {
+                    (false, "Unknown".to_string())
+                }
+            }
+            _ => (false, "Not Installed".to_string()),
+        }
+    }
 }
 
 async fn show_status() -> Result<()> {
@@ -433,74 +572,98 @@ async fn show_status() -> Result<()> {
         println!("   launchctl list | grep {}", SERVICE_NAME);
         #[cfg(target_os = "linux")]
         println!("   systemctl --user status {}", SERVICE_NAME);
+        #[cfg(target_os = "windows")]
+        println!("   sc query {}", SERVICE_NAME);
     }
 
     println!();
     Ok(())
 }
 
-#[tokio::main]
-async fn main() {
-    env_logger::init();
+#[cfg(target_os = "windows")]
+async fn handle_windows_service_command(cmd: ServiceCommands) -> Result<()> {
+    use service::windows_service_control;
 
-    let args: Vec<String> = env::args().collect();
+    match cmd {
+        ServiceCommands::Install => {
+            println!("Installing Windows service...");
+            let executable_path = env::current_exe()?;
+            let service_manager = ServiceManager::new(executable_path);
 
-    match args.get(1).map(|s| s.as_str()) {
-        Some("setup") => {
-            if let Err(e) = setup().await {
-                error!("Setup failed: {e}");
-                std::process::exit(1);
-            }
-            return;
+            // Prompt for credentials first
+            let username = prompt_input("Enter LDAP Username: ", false).map_err(AppError::from)?;
+            let password = prompt_input("Enter LDAP Password: ", true).map_err(AppError::from)?;
+            service_manager.store_credentials(&username, &password)?;
+
+            // Prompt for Windows service account
+            println!("\nWindows Service Account Configuration");
+            println!("Leave blank to run as the current user.");
+            let account = prompt_input("Service account (e.g., .\\username): ", false)
+                .map_err(AppError::from)?;
+            let account_password = if account.is_empty() {
+                None
+            } else {
+                Some(prompt_input("Service account password: ", true).map_err(AppError::from)?)
+            };
+
+            service_manager.create_service_with_account(
+                if account.is_empty() { None } else { Some(&account) },
+                account_password.as_deref(),
+            )?;
+
+            println!("✓ Windows service installed successfully.");
+            Ok(())
         }
-        Some("update-credentials") => {
-            if let Err(e) = update_credentials().await {
-                error!("Credential update failed: {e}");
-                std::process::exit(1);
-            }
-            return;
+        ServiceCommands::Uninstall => {
+            println!("Uninstalling Windows service...");
+            windows_service_control::uninstall_service()?;
+            println!("✓ Windows service uninstalled successfully.");
+            Ok(())
         }
-        Some("status") => {
-            if let Err(e) = show_status().await {
-                error!("Status check failed: {e}");
-                std::process::exit(1);
-            }
-            return;
+        ServiceCommands::Start => {
+            println!("Starting Windows service...");
+            windows_service_control::start_service()?;
+            println!("✓ Windows service started.");
+            Ok(())
         }
-        Some("health") | Some("check") => {
-            if let Err(e) = health_check().await {
-                error!("Health check failed: {e}");
-                std::process::exit(1);
-            }
-            return;
-        }
-        Some("--help") | Some("-h") => {
-            println!("Auto Captive Portal Login Service");
-            println!();
-            println!("USAGE:");
-            println!("    acp [SUBCOMMAND]");
-            println!();
-            println!("SUBCOMMANDS:");
-            println!("    setup               Configure credentials and install service");
-            println!("    update-credentials  Update stored LDAP credentials");
-            println!("    status              Show service status and statistics");
-            println!("    health              Perform health check");
-            println!("    help                Print this help message");
-            println!();
-            println!("Running without arguments starts the service.");
-            return;
-        }
-        Some(_) => {
-            error!("Unknown command. Use 'acp --help' for usage information.");
-            std::process::exit(1);
-        }
-        None => {
-            // Default: run the service
+        ServiceCommands::Stop => {
+            println!("Stopping Windows service...");
+            windows_service_control::stop_service()?;
+            println!("✓ Windows service stopped.");
+            Ok(())
         }
     }
+}
 
-    if let Err(e) = run().await {
-        error!("Application error: {e}");
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+
+    // Determine if we're running as a service (for logging configuration)
+    let is_service = matches!(cli.command, Some(Commands::Run));
+
+    // Initialize logging
+    if let Err(e) = logging::init_logging(is_service) {
+        eprintln!("Warning: Failed to initialize logging: {}", e);
+    }
+
+    let result = match cli.command {
+        Some(Commands::Setup { username }) => setup(username).await,
+        Some(Commands::UpdateCredentials { username }) => update_credentials(username).await,
+        Some(Commands::Status) => show_status().await,
+        Some(Commands::Health) => health_check().await,
+        Some(Commands::Logout { clear_credentials }) => logout_command(clear_credentials).await,
+        Some(Commands::Run) => run().await,
+        #[cfg(target_os = "windows")]
+        Some(Commands::Service(cmd)) => handle_windows_service_command(cmd).await,
+        None => {
+            // Default: run the service
+            run().await
+        }
+    };
+
+    if let Err(e) = result {
+        error!("Error: {e}");
         std::process::exit(1);
     }
 }

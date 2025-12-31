@@ -6,21 +6,23 @@ A Rust-based daemon that automatically authenticates against IIT Mandi's captive
 
 - **🚀 Automatic Login**: Detects and authenticates with the captive portal instantly upon network changes
 - **🔄 Hybrid Monitoring**: Combines real-time network event detection with intelligent exponential backoff polling
-- **🔐 Secure Credentials**: Stores credentials in OS keychain (macOS Keychain / Linux Secret Service)
+- **🔐 Secure Credentials**: Stores credentials in OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager)
 - **🔔 Desktop Notifications**: Get notified when successfully logged in
 - **⚡ Smart Retry Logic**: Automatic retry with exponential backoff on login failures
 - **📊 Service Status**: Monitor service health and login statistics
-- **🎯 Cross-Platform**: Supports macOS (x86_64, ARM64) and Linux (x86_64)
+- **🎯 Cross-Platform**: Supports macOS (x86_64, ARM64), Linux (x86_64), and Windows (x86_64)
 
 ## Prerequisites
 
-- **macOS** or **Linux**
-- **jq** (required for the installation script):
+- **macOS**, **Linux**, or **Windows**
+- **jq** (required for the installation script on macOS/Linux):
   - On macOS: `brew install jq`
   - On Linux: `apt install jq` (Debian/Ubuntu) or `yum install jq` (CentOS/RHEL)
 - **Rust and Cargo** (only if building from source)
 
 ## Installation
+
+### macOS / Linux
 
 To install and set up the Auto Captive Portal Login service, run:
 
@@ -38,11 +40,20 @@ This command will:
 
 **Note**: You will be prompted for your LDAP credentials during the setup process.
 
+### Windows
+
+1. Download the latest `acp-script-windows-amd64.exe` from [GitHub Releases](https://github.com/amansikarwar/auto-captive-portal/releases)
+2. Rename it to `acp.exe` and place it in a permanent location (e.g., `C:\Program Files\ACP\`)
+3. Run as Administrator: `acp.exe setup`
+
+The Windows version includes a UAC manifest that automatically requests administrator privileges when installing the service.
+
 ### Supported Platforms
 
 - **Linux (x86_64)** - Ubuntu, Debian, Fedora, CentOS, etc.
 - **macOS (x86_64)** - Intel-based Macs
 - **macOS (ARM64)** - Apple Silicon Macs (M1, M2, M3, etc.)
+- **Windows (x86_64)** - Windows 10/11
 
 ## Usage
 
@@ -58,11 +69,31 @@ acp update-credentials
 # Perform health check (verify credentials, portal detection, connectivity)
 acp health
 
+# Logout from captive portal
+acp logout
+
+# Logout and clear stored credentials
+acp logout --clear-credentials
+
 # Show help and available commands
 acp --help
 
 # Run daemon directly (for testing)
-acp
+acp run
+```
+
+### Windows Service Commands
+
+```powershell
+# Install Windows service (run as Administrator)
+acp.exe service install
+
+# Uninstall Windows service
+acp.exe service uninstall
+
+# Start/stop the service
+acp.exe service start
+acp.exe service stop
 ```
 
 ### Service Status Example
@@ -112,6 +143,8 @@ log stream --predicate 'processImagePath contains "acp"'
 
 **Credentials Storage:** Uses macOS Keychain (`security` command)
 
+**Log File Location:** `~/.local/share/acp/logs/acp.log`
+
 ### Linux
 
 The service runs as a **systemd user service** (`acp.service`).
@@ -139,6 +172,34 @@ journalctl --user -u acp -f
 ```
 
 **Credentials Storage:** Uses Linux Secret Service (`libsecret`)
+
+**Log File Location:** `~/.local/share/acp/logs/acp.log`
+
+### Windows
+
+The service runs as a **Windows Service** (`acp`) and can be configured to start automatically.
+
+**Manual Service Management:**
+
+```powershell
+# Check service status
+sc query acp
+
+# Start service
+net start acp
+
+# Stop service
+net stop acp
+
+# View service in Services Manager
+services.msc
+```
+
+**Credentials Storage:** Uses Windows Credential Manager
+
+**Log File Location:** `%APPDATA%\acp\logs\acp.log`
+
+**Note:** Installing or uninstalling the Windows service requires Administrator privileges. The application will automatically prompt for elevation via UAC.
 
 ## How It Works
 
@@ -175,6 +236,7 @@ ACP uses a **hybrid monitoring approach** for optimal responsiveness and resourc
 
 - **macOS**: Stored in macOS Keychain using `security` command
 - **Linux**: Stored in Secret Service (GNOME Keyring, KWallet, etc.) using `libsecret`
+- **Windows**: Stored in Windows Credential Manager
 - **No plaintext**: Credentials never stored in configuration files
 - **OS-level encryption**: Leverages OS native secure storage
 
@@ -217,9 +279,16 @@ acp status
 # Check logs
 # macOS:
 log show --predicate 'processImagePath contains "acp"' --last 5m
+# or check file log:
+cat ~/.local/share/acp/logs/acp.log
 
 # Linux:
 journalctl --user -u acp -n 50
+# or check file log:
+cat ~/.local/share/acp/logs/acp.log
+
+# Windows (PowerShell):
+Get-Content "$env:APPDATA\acp\logs\acp.log" -Tail 50
 ```
 
 ### Manual Testing
@@ -264,6 +333,7 @@ The project uses GitHub Actions for cross-platform builds:
 - x86_64-unknown-linux-gnu    → acp-script-linux-amd64
 - x86_64-apple-darwin         → acp-script-macos-x86_64
 - aarch64-apple-darwin        → acp-script-macos-arm64
+- x86_64-pc-windows-msvc      → acp-script-windows-amd64.exe
 ```
 
 ### Linux Build Requirements
@@ -281,13 +351,6 @@ sudo dnf install gtk3-devel libappindicator-gtk3-devel
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
-### Areas for Improvement
-
-- Support for additional captive portal formats
-- Enhanced error reporting and diagnostics
-- Additional platform support (Windows, BSD)
-- Configuration file support for advanced settings
 
 ## License
 

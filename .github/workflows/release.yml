@@ -27,6 +27,10 @@ jobs:
             target: aarch64-apple-darwin
             artifact_name: acp-script
             asset_name: acp-script-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: acp-script.exe
+            asset_name: acp-script-windows-amd64.exe
 
     steps:
       - name: Checkout code
@@ -46,8 +50,14 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Rename Binary
+      - name: Rename Binary (Unix)
+        if: matrix.os != 'windows-latest'
         run: mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }}
+
+      - name: Rename Binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: move target\${{ matrix.target }}\release\${{ matrix.artifact_name }} ${{ matrix.asset_name }}
+        shell: cmd
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v1

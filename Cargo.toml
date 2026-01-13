@@ -8,7 +8,7 @@ build = "build.rs"
 
 [dependencies]
 regex = "1.12.2"
-reqwest = { version = "0.12.28", features = ["default-tls"] }
+reqwest = { version = "0.13.1", features = ["default-tls"] }
 tokio = { version = "1.49.0", features = ["full"] }
 keyring = { version = "3.6.3", features = [
     "apple-native",

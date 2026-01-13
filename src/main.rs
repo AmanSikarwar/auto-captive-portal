@@ -9,14 +9,13 @@ use console::Term;
 use error::{AppError, Result};
 use keyring::Entry;
 use log::{error, info};
-use service::{ServiceManager, SERVICE_NAME};
+use service::{SERVICE_NAME, ServiceManager};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
-/// Auto Captive Portal - Automatic captive portal login service for IIT Mandi
 #[derive(Parser)]
 #[command(name = "acp")]
 #[command(author, version, about, long_about = None)]
@@ -28,54 +27,39 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Configure credentials and install the service
     Setup {
-        /// LDAP username (will prompt if not provided)
         #[arg(short, long)]
         username: Option<String>,
     },
 
-    /// Update stored LDAP credentials
     UpdateCredentials {
-        /// LDAP username (will prompt if not provided)
         #[arg(short, long)]
         username: Option<String>,
     },
 
-    /// Show service status and statistics
     Status,
 
-    /// Perform a health check
     Health,
 
-    /// Logout from captive portal and optionally clear credentials
     Logout {
-        /// Also clear stored credentials
         #[arg(short, long)]
         clear_credentials: bool,
     },
 
-    /// Run the service (used internally by service managers)
     #[command(hide = true)]
     Run,
 
-    /// Windows service management commands
     #[cfg(target_os = "windows")]
     #[command(subcommand)]
     Service(ServiceCommands),
 }
 
-/// Windows service management subcommands
 #[cfg(target_os = "windows")]
 #[derive(Subcommand)]
 enum ServiceCommands {
-    /// Install the Windows service
     Install,
-    /// Uninstall the Windows service
     Uninstall,
-    /// Start the Windows service
     Start,
-    /// Stop the Windows service
     Stop,
 }
 
@@ -94,7 +78,6 @@ fn clear_credentials() -> Result<()> {
     let username_entry = Entry::new(SERVICE_NAME, "ldap_username").map_err(AppError::from)?;
     let password_entry = Entry::new(SERVICE_NAME, "ldap_password").map_err(AppError::from)?;
 
-    // Ignore errors if credentials don't exist
     let _ = username_entry.delete_credential();
     let _ = password_entry.delete_credential();
 
@@ -117,6 +100,7 @@ async fn check_and_login(username: &str, password: &str) -> Result<bool> {
     match captive_portal::check_captive_portal().await {
         Ok(Some((url, magic))) => {
             info!("Captive portal detected at {url}");
+            update_state_file(Some(&url), false).ok();
             match captive_portal::login_with_retry(&url, username, password, &magic).await {
                 Ok(_) => {
                     notifications::send_notification("Logged into captive portal successfully.")
@@ -149,6 +133,13 @@ async fn setup(username: Option<String>) -> Result<()> {
         None => prompt_input("Enter LDAP Username: ", false).map_err(AppError::from)?,
     };
     let password: String = prompt_input("Enter LDAP Password: ", true).map_err(AppError::from)?;
+
+    if username.trim().is_empty() {
+        return Err(AppError::Service("Username cannot be empty".to_string()));
+    }
+    if password.trim().is_empty() {
+        return Err(AppError::Service("Password cannot be empty".to_string()));
+    }
 
     let executable_path: std::path::PathBuf = env::current_exe()?;
     let service_manager: ServiceManager = ServiceManager::new(executable_path);
@@ -280,9 +271,10 @@ async fn run() -> Result<()> {
 
     const MAX_DELAY_SECS: u64 = 1800;
     const MIN_DELAY_SECS: u64 = 10;
-    let mut sleep_duration: std::time::Duration = tokio::time::Duration::from_secs(MIN_DELAY_SECS);
+    const CHANNEL_CAPACITY: usize = 10; // Bounded channel to prevent memory issues
+    let mut sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
 
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
 
     let _watcher_handle = netwatcher::watch_interfaces(move |update| {
         if update.diff.added.is_empty()
@@ -302,9 +294,7 @@ async fn run() -> Result<()> {
 
         if has_relevant_change {
             info!("Relevant network change detected: a new interface or IP address was added.");
-            if let Err(e) = tx.send(()) {
-                error!("Failed to send network change signal: {e}");
-            }
+            if tx.try_send(()).is_err() {}
         } else {
             info!("Ignoring irrelevant network change (e.g., interface or IP removed).");
         }
@@ -313,7 +303,8 @@ async fn run() -> Result<()> {
 
     info!("Performing initial check for captive portal on startup...");
     if let Ok(true) = check_and_login(&username, &password).await {
-        sleep_duration = tokio::time::Duration::from_secs(MAX_DELAY_SECS);
+        sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
+        update_state_file(None, true).ok();
     }
 
     info!("Starting hybrid network watcher and polling loop...");
@@ -326,12 +317,14 @@ async fn run() -> Result<()> {
 
             Some(_) = rx.recv() => {
                 info!("Received signal from network watcher. Triggering immediate check.");
-                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
 
                 if let Ok(true) = check_and_login(&username, &password).await {
-                    sleep_duration = tokio::time::Duration::from_secs(MAX_DELAY_SECS);
+                    sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
+                    update_state_file(None, true).ok();
                 } else {
-                    sleep_duration = tokio::time::Duration::from_secs(MIN_DELAY_SECS);
+                    sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
+                    update_state_file(None, false).ok();
                 }
             },
 
@@ -339,15 +332,18 @@ async fn run() -> Result<()> {
                 info!("Polling interval elapsed. Checking for captive portal...");
                 match check_and_login(&username, &password).await {
                     Ok(true) => {
-                        sleep_duration = tokio::time::Duration::from_secs(MAX_DELAY_SECS);
+                        sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
+                        update_state_file(None, true).ok();
                     },
                     Ok(false) => {
                         let current_secs = sleep_duration.as_secs();
                         let next_secs = (current_secs / 2).max(MIN_DELAY_SECS);
-                        sleep_duration = tokio::time::Duration::from_secs(next_secs);
+                        sleep_duration = Duration::from_secs(next_secs);
+                        update_state_file(None, false).ok();
                     },
                     Err(_) => {
-                        sleep_duration = tokio::time::Duration::from_secs(MIN_DELAY_SECS);
+                        sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
+                        update_state_file(None, false).ok();
                     }
                 }
             },
@@ -387,13 +383,24 @@ async fn health_check() -> Result<()> {
 }
 
 fn get_state_file_path() -> Result<PathBuf> {
-    let home_dir = dirs::home_dir()
-        .ok_or_else(|| AppError::Service("Could not determine home directory".to_string()))?;
+    #[cfg(target_os = "windows")]
+    {
+        let app_data = std::env::var("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("C:\\ProgramData"));
+        let state_dir = app_data.join("acp");
+        fs::create_dir_all(&state_dir)?;
+        Ok(state_dir.join("state.json"))
+    }
 
-    let state_dir = home_dir.join(".local/share/acp");
-    fs::create_dir_all(&state_dir)?;
-
-    Ok(state_dir.join("state.json"))
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home_dir = dirs::home_dir()
+            .ok_or_else(|| AppError::Service("Could not determine home directory".to_string()))?;
+        let state_dir = home_dir.join(".local").join("share").join("acp");
+        fs::create_dir_all(&state_dir)?;
+        Ok(state_dir.join("state.json"))
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -401,6 +408,40 @@ struct ServiceState {
     last_check_timestamp: Option<u64>,
     last_successful_login_timestamp: Option<u64>,
     last_portal_detected: Option<String>,
+}
+
+fn update_state_file(portal_url: Option<&str>, login_success: bool) -> Result<()> {
+    let state_path = get_state_file_path()?;
+
+    let mut state: ServiceState = if state_path.exists() {
+        fs::read_to_string(&state_path)
+            .ok()
+            .and_then(|contents| serde_json::from_str(&contents).ok())
+            .unwrap_or_default()
+    } else {
+        ServiceState::default()
+    };
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs();
+
+    state.last_check_timestamp = Some(now);
+
+    if login_success {
+        state.last_successful_login_timestamp = Some(now);
+    }
+
+    if let Some(url) = portal_url {
+        state.last_portal_detected = Some(url.to_string());
+    }
+
+    let contents = serde_json::to_string_pretty(&state)
+        .map_err(|e| AppError::Service(format!("Failed to serialize state: {}", e)))?;
+    fs::write(&state_path, contents)?;
+
+    Ok(())
 }
 
 fn format_duration_ago(timestamp: u64) -> String {
@@ -483,9 +524,7 @@ fn check_service_running() -> (bool, String) {
     {
         use std::process::Command;
 
-        let output = Command::new("sc")
-            .args(["query", SERVICE_NAME])
-            .output();
+        let output = Command::new("sc").args(["query", SERVICE_NAME]).output();
 
         match output {
             Ok(out) if out.status.success() => {
@@ -542,23 +581,22 @@ async fn show_status() -> Result<()> {
         Err(_) => println!("✗ Check failed"),
     }
 
-    if let Ok(state_path) = get_state_file_path() {
-        if let Ok(contents) = fs::read_to_string(&state_path) {
-            if let Ok(state) = serde_json::from_str::<ServiceState>(&contents) {
-                println!("\n─────────────────────────────────────────────────────");
+    if let Ok(state_path) = get_state_file_path()
+        && let Ok(contents) = fs::read_to_string(&state_path)
+        && let Ok(state) = serde_json::from_str::<ServiceState>(&contents)
+    {
+        println!("\n─────────────────────────────────────────────────────");
 
-                if let Some(ts) = state.last_check_timestamp {
-                    println!("Last Check:         {}", format_duration_ago(ts));
-                }
+        if let Some(ts) = state.last_check_timestamp {
+            println!("Last Check:         {}", format_duration_ago(ts));
+        }
 
-                if let Some(ts) = state.last_successful_login_timestamp {
-                    println!("Last Login:         {}", format_duration_ago(ts));
-                }
+        if let Some(ts) = state.last_successful_login_timestamp {
+            println!("Last Login:         {}", format_duration_ago(ts));
+        }
 
-                if let Some(portal) = state.last_portal_detected {
-                    println!("Last Portal:        {}", portal);
-                }
-            }
+        if let Some(portal) = state.last_portal_detected {
+            println!("Last Portal:        {}", portal);
         }
     }
 
@@ -607,7 +645,11 @@ async fn handle_windows_service_command(cmd: ServiceCommands) -> Result<()> {
             };
 
             service_manager.create_service_with_account(
-                if account.is_empty() { None } else { Some(&account) },
+                if account.is_empty() {
+                    None
+                } else {
+                    Some(&account)
+                },
                 account_password.as_deref(),
             )?;
 
@@ -639,10 +681,8 @@ async fn handle_windows_service_command(cmd: ServiceCommands) -> Result<()> {
 async fn main() {
     let cli = Cli::parse();
 
-    // Determine if we're running as a service (for logging configuration)
     let is_service = matches!(cli.command, Some(Commands::Run));
 
-    // Initialize logging
     if let Err(e) = logging::init_logging(is_service) {
         eprintln!("Warning: Failed to initialize logging: {}", e);
     }

@@ -3,10 +3,36 @@ use log::{error, info, warn};
 use regex::Regex;
 use reqwest::StatusCode;
 use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 const MAX_LOGIN_RETRIES: u32 = 3;
 const INITIAL_RETRY_DELAY_SECS: u64 = 2;
 const LOGOUT_URL: &str = "https://login.iitmandi.ac.in:1003/logout?";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn portal_url_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"window\.location="([^"]*)""#).unwrap())
+}
+
+fn magic_value_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"<input type="hidden" name="magic" value="([^"]*)">"#).unwrap())
+}
+
+fn get_client() -> Result<reqwest::Client> {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(2)
+            .build()
+            .expect("Failed to create HTTP client")
+    });
+    Ok(CLIENT.get().unwrap().clone())
+}
 
 pub async fn logout() -> Result<()> {
     info!(
@@ -14,9 +40,7 @@ pub async fn logout() -> Result<()> {
         LOGOUT_URL
     );
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
+    let client = get_client()?;
 
     match client.get(LOGOUT_URL).send().await {
         Ok(resp) => {
@@ -39,9 +63,7 @@ pub async fn logout() -> Result<()> {
 
 pub async fn verify_internet_connectivity() -> Result<bool> {
     let google_check_url: &str = "http://clients3.google.com/generate_204";
-    let client: reqwest::Client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
+    let client = get_client()?;
 
     match client.get(google_check_url).send().await {
         Ok(resp) if resp.status() == StatusCode::NO_CONTENT => {
@@ -71,9 +93,7 @@ pub async fn login(portal_url: &str, username: &str, password: &str, magic: &str
 
     info!("Attempting to login to captive portal via POST request at: {login_url}");
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
+    let client = get_client()?;
 
     let mut form_data = HashMap::new();
     form_data.insert("username", username);
@@ -107,7 +127,7 @@ pub async fn login(portal_url: &str, username: &str, password: &str, magic: &str
             error!("Login verification failed: portal returned success but no internet access");
             Err(AppError::LoginFailed(
                 "Portal accepted credentials but internet is not accessible. \
-                 This may indicate incorrect credentials or portal issues."
+                This may indicate incorrect credentials or portal issues."
                     .to_string(),
             ))
         }
@@ -164,27 +184,25 @@ pub async fn login_with_retry(
 }
 
 pub fn extract_captive_portal_url(html: &str) -> Option<String> {
-    let re: Regex = Regex::new(r#"window\.location="([^"]*)""#).unwrap();
-    re.captures(html)
+    portal_url_regex()
+        .captures(html)
         .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
 }
 
 pub fn extract_magic_value(html: &str) -> Option<String> {
-    let re: Regex = Regex::new(r#"<input type="hidden" name="magic" value="([^"]*)">"#).unwrap();
-    re.captures(html)
+    magic_value_regex()
+        .captures(html)
         .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+        .filter(|s| !s.is_empty()) // Filter out empty magic values
 }
 
 pub async fn check_captive_portal() -> Result<Option<(String, String)>> {
     let google_check_url: &str = "http://clients3.google.com/generate_204";
     let max_check_retries = 2;
     let mut last_error: Option<reqwest::Error> = None;
+    let client = get_client()?;
 
     for attempt in 1..=max_check_retries {
-        let client: reqwest::Client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()?;
-
         match client.get(google_check_url).send().await {
             Ok(google_check_resp) => {
                 return check_portal_response(google_check_resp, &client).await;
@@ -211,7 +229,8 @@ async fn check_portal_response(
     google_check_resp: reqwest::Response,
     client: &reqwest::Client,
 ) -> Result<Option<(String, String)>> {
-    match google_check_resp.status() {
+    let status = google_check_resp.status();
+    match status {
         StatusCode::NO_CONTENT => {
             info!("No captive portal detected: received expected 204 response");
             Ok(None)
@@ -230,23 +249,36 @@ async fn check_portal_response(
                         info!("Extracted magic value: {magic_value}");
                         Ok(Some((captive_portal_url, magic_value)))
                     } else {
-                        error!("Could not extract magic value from captive portal page.");
-                        Ok(None)
+                        error!(
+                            "Could not extract magic value from captive portal page (empty or missing)."
+                        );
+                        Err(AppError::LoginFailed(
+                            "Failed to extract magic value from portal page".to_string(),
+                        ))
                     }
                 } else {
+                    let status = portal_page_resp.status();
                     error!(
                         "Failed to fetch captive portal page to extract magic value. Status: {}",
-                        portal_page_resp.status()
+                        status
                     );
-                    Ok(None)
+                    Err(AppError::LoginFailed(format!(
+                        "Portal page returned error status: {}",
+                        status
+                    )))
                 }
             } else {
+                warn!("Received 200 response but could not extract portal URL from response");
                 Ok(None)
             }
         }
-        _ => Err(AppError::Network(
+        status if status.is_client_error() || status.is_server_error() => Err(AppError::Network(
             google_check_resp.error_for_status().unwrap_err(),
         )),
+        _ => {
+            warn!("Unexpected status code from connectivity check: {}", status);
+            Ok(None)
+        }
     }
 }
 
@@ -284,7 +316,7 @@ mod tests {
     #[test]
     fn test_extract_magic_value_empty() {
         let html = r#"<input type="hidden" name="magic" value="">"#;
-        assert_eq!(extract_magic_value(html), Some("".to_string()));
+        assert_eq!(extract_magic_value(html), None);
     }
 
     #[test]

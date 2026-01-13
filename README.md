@@ -4,13 +4,13 @@ A Rust-based daemon that automatically authenticates against IIT Mandi's captive
 
 ## Features
 
-- **🚀 Automatic Login**: Detects and authenticates with the captive portal instantly upon network changes
-- **🔄 Hybrid Monitoring**: Combines real-time network event detection with intelligent exponential backoff polling
-- **🔐 Secure Credentials**: Stores credentials in OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager)
-- **🔔 Desktop Notifications**: Get notified when successfully logged in
-- **⚡ Smart Retry Logic**: Automatic retry with exponential backoff on login failures
-- **📊 Service Status**: Monitor service health and login statistics
-- **🎯 Cross-Platform**: Supports macOS (x86_64, ARM64), Linux (x86_64), and Windows (x86_64)
+- **Automatic Login**: Detects and authenticates with the captive portal instantly upon network changes
+- **Hybrid Monitoring**: Combines real-time network event detection with intelligent exponential backoff polling
+- **Secure Credentials**: Stores credentials in OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager)
+- **Desktop Notifications**: Get notified when successfully logged in
+- **Smart Retry Logic**: Automatic retry with exponential backoff on login failures
+- **Service Status**: Monitor service health and login statistics
+- **Cross-Platform**: Supports macOS (x86_64, ARM64), Linux (x86_64, ARM64), and Windows (x86_64)
 
 ## Prerequisites
 
@@ -50,10 +50,13 @@ The Windows version includes a UAC manifest that automatically requests administ
 
 ### Supported Platforms
 
-- **Linux (x86_64)** - Ubuntu, Debian, Fedora, CentOS, etc.
-- **macOS (x86_64)** - Intel-based Macs
-- **macOS (ARM64)** - Apple Silicon Macs (M1, M2, M3, etc.)
-- **Windows (x86_64)** - Windows 10/11
+| Platform | Architecture | Binary Name |
+|----------|--------------|-------------|
+| Linux | x86_64 | `acp-script-linux-amd64` |
+| Linux | ARM64 | `acp-script-linux-arm64` |
+| macOS | Intel (x86_64) | `acp-script-macos-x86_64` |
+| macOS | Apple Silicon (ARM64) | `acp-script-macos-arm64` |
+| Windows | x86_64 | `acp-script-windows-amd64.exe` |
 
 ## Usage
 
@@ -253,7 +256,8 @@ This will:
 1. Stop and remove the background service
 2. Delete stored credentials from keychain
 3. Remove the `acp` binary from `/usr/local/bin/`
-4. Clean up all service configuration files
+4. Remove logs and state files from `~/.local/share/acp/`
+5. Clean up all service configuration files
 
 ## Troubleshooting
 
@@ -311,6 +315,21 @@ RUST_LOG=INFO ./target/release/acp-script
 
 ## Development
 
+### Project Structure
+
+```
+src/
+├── main.rs           # CLI entry point and command handlers
+├── daemon.rs         # Core daemon loop with hybrid monitoring
+├── captive_portal.rs # Portal detection and authentication
+├── credentials.rs    # Secure credential storage (OS keychain)
+├── service.rs        # Platform-specific service management
+├── state.rs          # Persistent state tracking
+├── notifications.rs  # Desktop notifications
+├── logging.rs        # Logging configuration
+└── error.rs          # Error types
+```
+
 ### Building from Source
 
 ```bash
@@ -320,6 +339,12 @@ cd auto-captive-portal
 
 # Build release binary
 cargo build --release
+
+# Run tests
+cargo test
+
+# Run clippy
+cargo clippy
 
 # Binary will be at: target/release/acp-script
 ```
@@ -331,6 +356,7 @@ The project uses GitHub Actions for cross-platform builds:
 ```yaml
 # Targets:
 - x86_64-unknown-linux-gnu    → acp-script-linux-amd64
+- aarch64-unknown-linux-gnu   → acp-script-linux-arm64
 - x86_64-apple-darwin         → acp-script-macos-x86_64
 - aarch64-apple-darwin        → acp-script-macos-arm64
 - x86_64-pc-windows-msvc      → acp-script-windows-amd64.exe

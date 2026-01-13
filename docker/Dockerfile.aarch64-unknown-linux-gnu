@@ -1,0 +1,15 @@
+FROM ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
+
+RUN dpkg --add-architecture arm64 && \
+    . /etc/os-release && \
+    echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ ${VERSION_CODENAME} main restricted universe" >> /etc/apt/sources.list.d/arm64.list && \
+    echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ ${VERSION_CODENAME}-updates main restricted universe" >> /etc/apt/sources.list.d/arm64.list && \
+    echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ ${VERSION_CODENAME}-security main restricted universe" >> /etc/apt/sources.list.d/arm64.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libdbus-1-dev:arm64 && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PKG_CONFIG_ALLOW_CROSS=1
+ENV PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
+ENV PKG_CONFIG_SYSROOT_DIR=/

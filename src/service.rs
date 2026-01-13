@@ -1,14 +1,8 @@
+use crate::credentials::SERVICE_NAME;
 use crate::error::{AppError, Result};
-use keyring::Entry;
 use log::{error, info};
 use std::fs;
 use std::path::PathBuf;
-
-pub const SERVICE_NAME: &str = if cfg!(target_os = "macos") {
-    "com.user.acp"
-} else {
-    "acp"
-};
 
 pub struct ServiceManager {
     executable_path: PathBuf,
@@ -17,16 +11,6 @@ pub struct ServiceManager {
 impl ServiceManager {
     pub fn new(executable_path: PathBuf) -> Self {
         Self { executable_path }
-    }
-
-    pub fn store_credentials(&self, username: &str, password: &str) -> Result<()> {
-        let username_entry: Entry = Entry::new(SERVICE_NAME, "ldap_username")?;
-        username_entry.set_password(username)?;
-
-        let password_entry: Entry = Entry::new(SERVICE_NAME, "ldap_password")?;
-        password_entry.set_password(password)?;
-
-        Ok(())
     }
 
     #[cfg(target_os = "macos")]
@@ -167,13 +151,11 @@ WantedBy=default.target"#,
         Ok(())
     }
 
-    /// Windows service creation with user account support
     #[cfg(target_os = "windows")]
     pub fn create_service(&self) -> Result<()> {
         self.create_service_with_account(None, None)
     }
 
-    /// Windows service creation with optional user account
     #[cfg(target_os = "windows")]
     pub fn create_service_with_account(
         &self,
@@ -190,7 +172,6 @@ WantedBy=default.target"#,
 
         info!("Installing Windows service...");
 
-        // Register event log source
         if let Err(e) = crate::logging::register_event_log() {
             error!("Warning: Failed to register event log: {}", e);
         }
@@ -226,12 +207,10 @@ WantedBy=default.target"#,
             )
             .map_err(|e| AppError::Service(format!("Failed to create service: {}", e)))?;
 
-        // Set service description
         service
             .set_description("Automatic captive portal login service for IIT Mandi network")
             .map_err(|e| AppError::Service(format!("Failed to set service description: {}", e)))?;
 
-        // Start the service
         service
             .start::<OsString>(&[])
             .map_err(|e| AppError::Service(format!("Failed to start service: {}", e)))?;
@@ -239,64 +218,6 @@ WantedBy=default.target"#,
         info!("Windows service installed and started successfully.");
         Ok(())
     }
-}
-
-#[allow(dead_code)]
-pub async fn restart_service() -> Result<()> {
-    info!("Restarting service: {SERVICE_NAME}");
-
-    #[cfg(target_os = "linux")]
-    {
-        let output = std::process::Command::new("systemctl")
-            .args(["--user", "restart", SERVICE_NAME])
-            .output()?;
-
-        if !output.status.success() {
-            error!(
-                "Failed to restart service: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return Err(AppError::Service(
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            ));
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let uid = std::process::Command::new("id")
-            .args(["-u"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| "501".to_string());
-
-        let service_target = format!("gui/{}/{}", uid, SERVICE_NAME);
-        let output: std::process::Output = std::process::Command::new("launchctl")
-            .args(["kickstart", "-k", &service_target])
-            .output()?;
-
-        if !output.status.success() {
-            error!(
-                "Failed to restart service: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return Err(AppError::Service(
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            ));
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        windows_service_control::stop_service()?;
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        windows_service_control::start_service()?;
-    }
-
-    info!("Service restarted successfully.");
-    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -339,7 +260,6 @@ pub mod windows_service_control {
             .stop()
             .map_err(|e| AppError::Service(format!("Failed to stop service: {}", e)))?;
 
-        // Wait for service to stop
         std::thread::sleep(Duration::from_secs(2));
 
         info!("Service stopped successfully.");
@@ -390,7 +310,7 @@ pub mod windows_service_main {
     define_windows_service!(ffi_service_main, service_main);
 
     pub fn run_as_windows_service() -> windows_service::Result<()> {
-        service_dispatcher::start(super::SERVICE_NAME, ffi_service_main)
+        service_dispatcher::start(crate::credentials::SERVICE_NAME, ffi_service_main)
     }
 
     fn service_main(_arguments: Vec<OsString>) {
@@ -414,7 +334,8 @@ pub mod windows_service_main {
             }
         };
 
-        let status_handle = service_control_handler::register(super::SERVICE_NAME, event_handler)?;
+        let status_handle =
+            service_control_handler::register(crate::credentials::SERVICE_NAME, event_handler)?;
 
         status_handle.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
@@ -446,14 +367,9 @@ pub mod windows_service_main {
     }
 
     async fn run_service_loop(shutdown_rx: mpsc::Receiver<()>) {
-        use crate::captive_portal;
-        use crate::error::AppError;
-        use crate::notifications;
-        use keyring::Entry;
-        use log::{error, info};
-        use tokio::sync::mpsc as tokio_mpsc;
+        use log::error;
 
-        let (username, password) = match get_credentials_internal() {
+        let (username, password) = match crate::credentials::get_credentials() {
             Ok(creds) => creds,
             Err(e) => {
                 error!("Failed to get credentials: {}", e);
@@ -461,135 +377,6 @@ pub mod windows_service_main {
             }
         };
 
-        const MAX_DELAY_SECS: u64 = 1800;
-        const MIN_DELAY_SECS: u64 = 10;
-        const CHANNEL_CAPACITY: usize = 10;
-        let mut sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
-
-        // Use bounded channel to prevent unbounded memory growth
-        let (tx, mut rx) = tokio_mpsc::channel(CHANNEL_CAPACITY);
-
-        let _watcher_handle = match netwatcher::watch_interfaces(move |update| {
-            if update.diff.added.is_empty()
-                && update.diff.removed.is_empty()
-                && update.diff.modified.is_empty()
-            {
-                return;
-            }
-
-            let has_relevant_change = !update.diff.added.is_empty()
-                || update
-                    .diff
-                    .modified
-                    .values()
-                    .any(|d| !d.addrs_added.is_empty());
-
-            if has_relevant_change {
-                info!("Network change detected");
-                let _ = tx.try_send(());
-            }
-        }) {
-            Ok(handle) => handle,
-            Err(e) => {
-                error!("Failed to start network watcher: {}", e);
-                return;
-            }
-        };
-
-        info!("Performing initial captive portal check...");
-        if let Ok(true) = check_and_login_internal(&username, &password).await {
-            sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
-        }
-
-        loop {
-            if shutdown_rx.try_recv().is_ok() {
-                info!("Shutdown signal received, exiting service loop");
-                break;
-            }
-
-            tokio::select! {
-                biased;
-
-                Some(_) = rx.recv() => {
-                    info!("Network change signal received");
-                    tokio::time::sleep(Duration::from_secs(3)).await;
-
-                    if let Ok(true) = check_and_login_internal(&username, &password).await {
-                        sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
-                    } else {
-                        sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
-                    }
-                },
-
-                _ = tokio::time::sleep(sleep_duration) => {
-                    info!("Polling interval elapsed");
-                    match check_and_login_internal(&username, &password).await {
-                        Ok(true) => {
-                            sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
-                        },
-                        Ok(false) => {
-                            let current_secs = sleep_duration.as_secs();
-                            let next_secs = (current_secs / 2).max(MIN_DELAY_SECS);
-                            sleep_duration = Duration::from_secs(next_secs);
-                        },
-                        Err(_) => {
-                            sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
-                        }
-                    }
-                },
-            }
-        }
-    }
-
-    fn get_credentials_internal() -> crate::error::Result<(String, String)> {
-        let username_entry = Entry::new(super::SERVICE_NAME, "ldap_username")
-            .map_err(crate::error::AppError::from)?;
-        let password_entry = Entry::new(super::SERVICE_NAME, "ldap_password")
-            .map_err(crate::error::AppError::from)?;
-        Ok((
-            username_entry
-                .get_password()
-                .map_err(crate::error::AppError::from)?,
-            password_entry
-                .get_password()
-                .map_err(crate::error::AppError::from)?,
-        ))
-    }
-
-    async fn check_and_login_internal(
-        username: &str,
-        password: &str,
-    ) -> crate::error::Result<bool> {
-        use crate::captive_portal;
-        use crate::notifications;
-        use log::{error, info};
-
-        match captive_portal::check_captive_portal().await {
-            Ok(Some((url, magic))) => {
-                info!("Captive portal detected at {}", url);
-                match captive_portal::login_with_retry(&url, username, password, &magic).await {
-                    Ok(_) => {
-                        notifications::send_notification(
-                            "Logged into captive portal successfully.",
-                        )
-                        .await;
-                        info!("Login successful");
-                        Ok(true)
-                    }
-                    Err(e) => {
-                        error!("Login failed: {}", e);
-                        Err(e)
-                    }
-                }
-            }
-            Ok(None) => {
-                info!("No captive portal detected");
-                Ok(false)
-            }
-            Err(e) => {
-                error!("Portal check failed: {}", e);
-                Err(e)
-            }
-        }
+        crate::daemon::run_with_shutdown(&username, &password, shutdown_rx).await;
     }
 }

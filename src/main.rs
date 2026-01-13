@@ -1,20 +1,20 @@
 mod captive_portal;
+mod credentials;
+mod daemon;
 mod error;
 mod logging;
 mod notifications;
 mod service;
+mod state;
 
+use crate::credentials::SERVICE_NAME;
 use clap::{Parser, Subcommand};
 use console::Term;
 use error::{AppError, Result};
-use keyring::Entry;
 use log::{error, info};
-use service::{SERVICE_NAME, ServiceManager};
+use service::ServiceManager;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
 
 #[derive(Parser)]
 #[command(name = "acp")]
@@ -63,27 +63,6 @@ enum ServiceCommands {
     Stop,
 }
 
-fn get_credentials() -> Result<(String, String)> {
-    let username_entry: Entry =
-        Entry::new(SERVICE_NAME, "ldap_username").map_err(AppError::from)?;
-    let password_entry: Entry =
-        Entry::new(SERVICE_NAME, "ldap_password").map_err(AppError::from)?;
-    Ok((
-        username_entry.get_password().map_err(AppError::from)?,
-        password_entry.get_password().map_err(AppError::from)?,
-    ))
-}
-
-fn clear_credentials() -> Result<()> {
-    let username_entry = Entry::new(SERVICE_NAME, "ldap_username").map_err(AppError::from)?;
-    let password_entry = Entry::new(SERVICE_NAME, "ldap_password").map_err(AppError::from)?;
-
-    let _ = username_entry.delete_credential();
-    let _ = password_entry.delete_credential();
-
-    Ok(())
-}
-
 fn prompt_input(prompt: &str, is_password: bool) -> std::io::Result<String> {
     let term = Term::stdout();
     term.write_str(prompt)?;
@@ -94,35 +73,6 @@ fn prompt_input(prompt: &str, is_password: bool) -> std::io::Result<String> {
         term.read_line()?
     };
     Ok(input.trim().to_string())
-}
-
-async fn check_and_login(username: &str, password: &str) -> Result<bool> {
-    match captive_portal::check_captive_portal().await {
-        Ok(Some((url, magic))) => {
-            info!("Captive portal detected at {url}");
-            update_state_file(Some(&url), false).ok();
-            match captive_portal::login_with_retry(&url, username, password, &magic).await {
-                Ok(_) => {
-                    notifications::send_notification("Logged into captive portal successfully.")
-                        .await;
-                    info!("Logged into captive portal successfully.");
-                    Ok(true)
-                }
-                Err(e) => {
-                    error!("Login failed after all retry attempts: {e}");
-                    Err(e)
-                }
-            }
-        }
-        Ok(None) => {
-            info!("No captive portal detected.");
-            Ok(false)
-        }
-        Err(e) => {
-            error!("Portal check failed: {e}");
-            Err(e)
-        }
-    }
 }
 
 async fn setup(username: Option<String>) -> Result<()> {
@@ -141,10 +91,10 @@ async fn setup(username: Option<String>) -> Result<()> {
         return Err(AppError::Service("Password cannot be empty".to_string()));
     }
 
-    let executable_path: std::path::PathBuf = env::current_exe()?;
-    let service_manager: ServiceManager = ServiceManager::new(executable_path);
+    let executable_path = env::current_exe()?;
+    let service_manager = ServiceManager::new(executable_path);
 
-    service_manager.store_credentials(&username, &password)?;
+    credentials::store_credentials(&username, &password)?;
     service_manager.create_service()?;
 
     info!("Setup completed successfully.");
@@ -156,7 +106,7 @@ async fn update_credentials(username: Option<String>) -> Result<()> {
     println!("║     Update Credentials - Auto Captive Portal         ║");
     println!("╚══════════════════════════════════════════════════════╝\n");
 
-    match get_credentials() {
+    match credentials::get_credentials() {
         Ok((current_username, _)) => {
             println!("Current username: {}\n", current_username);
         }
@@ -220,9 +170,7 @@ async fn update_credentials(username: Option<String>) -> Result<()> {
         }
     }
 
-    let executable_path: std::path::PathBuf = env::current_exe()?;
-    let service_manager: ServiceManager = ServiceManager::new(executable_path);
-    service_manager.store_credentials(&username, &password)?;
+    credentials::store_credentials(&username, &password)?;
 
     println!("\n✓ Credentials updated successfully!");
     println!("\nℹ  The service will use the new credentials on the next login attempt.");
@@ -251,7 +199,7 @@ async fn logout_command(clear_creds: bool) -> Result<()> {
 
     if clear_creds {
         println!("\nClearing stored credentials...");
-        match clear_credentials() {
+        match credentials::clear_credentials() {
             Ok(_) => {
                 println!("✓ Credentials cleared successfully.");
             }
@@ -266,95 +214,10 @@ async fn logout_command(clear_creds: bool) -> Result<()> {
     Ok(())
 }
 
-async fn run() -> Result<()> {
-    let (username, password) = get_credentials()?;
-
-    const MAX_DELAY_SECS: u64 = 1800;
-    const MIN_DELAY_SECS: u64 = 10;
-    const CHANNEL_CAPACITY: usize = 10; // Bounded channel to prevent memory issues
-    let mut sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
-
-    let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
-
-    let _watcher_handle = netwatcher::watch_interfaces(move |update| {
-        if update.diff.added.is_empty()
-            && update.diff.removed.is_empty()
-            && update.diff.modified.is_empty()
-        {
-            info!("Watcher initialized with current network state.");
-            return;
-        }
-
-        let has_relevant_change = !update.diff.added.is_empty()
-            || update
-                .diff
-                .modified
-                .values()
-                .any(|d| !d.addrs_added.is_empty());
-
-        if has_relevant_change {
-            info!("Relevant network change detected: a new interface or IP address was added.");
-            if tx.try_send(()).is_err() {}
-        } else {
-            info!("Ignoring irrelevant network change (e.g., interface or IP removed).");
-        }
-    })
-    .map_err(|e| AppError::Service(e.to_string()))?;
-
-    info!("Performing initial check for captive portal on startup...");
-    if let Ok(true) = check_and_login(&username, &password).await {
-        sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
-        update_state_file(None, true).ok();
-    }
-
-    info!("Starting hybrid network watcher and polling loop...");
-
-    loop {
-        info!("Next poll in {:.0?} seconds.", sleep_duration.as_secs_f32());
-
-        tokio::select! {
-            biased;
-
-            Some(_) = rx.recv() => {
-                info!("Received signal from network watcher. Triggering immediate check.");
-                tokio::time::sleep(Duration::from_secs(3)).await;
-
-                if let Ok(true) = check_and_login(&username, &password).await {
-                    sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
-                    update_state_file(None, true).ok();
-                } else {
-                    sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
-                    update_state_file(None, false).ok();
-                }
-            },
-
-            _ = tokio::time::sleep(sleep_duration) => {
-                info!("Polling interval elapsed. Checking for captive portal...");
-                match check_and_login(&username, &password).await {
-                    Ok(true) => {
-                        sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
-                        update_state_file(None, true).ok();
-                    },
-                    Ok(false) => {
-                        let current_secs = sleep_duration.as_secs();
-                        let next_secs = (current_secs / 2).max(MIN_DELAY_SECS);
-                        sleep_duration = Duration::from_secs(next_secs);
-                        update_state_file(None, false).ok();
-                    },
-                    Err(_) => {
-                        sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
-                        update_state_file(None, false).ok();
-                    }
-                }
-            },
-        }
-    }
-}
-
 async fn health_check() -> Result<()> {
     info!("Performing health check...");
 
-    match get_credentials() {
+    match credentials::get_credentials() {
         Ok((username, _)) => {
             info!("✓ Credentials found for user: {username}");
         }
@@ -380,94 +243,6 @@ async fn health_check() -> Result<()> {
 
     info!("Health check completed successfully");
     Ok(())
-}
-
-fn get_state_file_path() -> Result<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        let app_data = std::env::var("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("C:\\ProgramData"));
-        let state_dir = app_data.join("acp");
-        fs::create_dir_all(&state_dir)?;
-        Ok(state_dir.join("state.json"))
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let home_dir = dirs::home_dir()
-            .ok_or_else(|| AppError::Service("Could not determine home directory".to_string()))?;
-        let state_dir = home_dir.join(".local").join("share").join("acp");
-        fs::create_dir_all(&state_dir)?;
-        Ok(state_dir.join("state.json"))
-    }
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Default)]
-struct ServiceState {
-    last_check_timestamp: Option<u64>,
-    last_successful_login_timestamp: Option<u64>,
-    last_portal_detected: Option<String>,
-}
-
-fn update_state_file(portal_url: Option<&str>, login_success: bool) -> Result<()> {
-    let state_path = get_state_file_path()?;
-
-    let mut state: ServiceState = if state_path.exists() {
-        fs::read_to_string(&state_path)
-            .ok()
-            .and_then(|contents| serde_json::from_str(&contents).ok())
-            .unwrap_or_default()
-    } else {
-        ServiceState::default()
-    };
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_secs();
-
-    state.last_check_timestamp = Some(now);
-
-    if login_success {
-        state.last_successful_login_timestamp = Some(now);
-    }
-
-    if let Some(url) = portal_url {
-        state.last_portal_detected = Some(url.to_string());
-    }
-
-    let contents = serde_json::to_string_pretty(&state)
-        .map_err(|e| AppError::Service(format!("Failed to serialize state: {}", e)))?;
-    fs::write(&state_path, contents)?;
-
-    Ok(())
-}
-
-fn format_duration_ago(timestamp: u64) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_secs();
-
-    if now < timestamp {
-        return "just now".to_string();
-    }
-
-    let diff = now - timestamp;
-
-    if diff < 60 {
-        format!("{} seconds ago", diff)
-    } else if diff < 3600 {
-        let mins = diff / 60;
-        format!("{} minute{} ago", mins, if mins == 1 { "" } else { "s" })
-    } else if diff < 86400 {
-        let hours = diff / 3600;
-        format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
-    } else {
-        let days = diff / 86400;
-        format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
-    }
 }
 
 fn check_service_running() -> (bool, String) {
@@ -547,7 +322,7 @@ async fn show_status() -> Result<()> {
     println!("║     Auto Captive Portal - Service Status             ║");
     println!("╚══════════════════════════════════════════════════════╝\n");
 
-    let creds_status = match get_credentials() {
+    let creds_status = match credentials::get_credentials() {
         Ok((username, _)) => {
             println!("Credentials:        ✓ Configured (user: {})", username);
             true
@@ -581,21 +356,21 @@ async fn show_status() -> Result<()> {
         Err(_) => println!("✗ Check failed"),
     }
 
-    if let Ok(state_path) = get_state_file_path()
+    if let Ok(state_path) = state::get_state_file_path()
         && let Ok(contents) = fs::read_to_string(&state_path)
-        && let Ok(state) = serde_json::from_str::<ServiceState>(&contents)
+        && let Ok(service_state) = serde_json::from_str::<state::ServiceState>(&contents)
     {
         println!("\n─────────────────────────────────────────────────────");
 
-        if let Some(ts) = state.last_check_timestamp {
-            println!("Last Check:         {}", format_duration_ago(ts));
+        if let Some(ts) = service_state.last_check_timestamp {
+            println!("Last Check:         {}", state::format_duration_ago(ts));
         }
 
-        if let Some(ts) = state.last_successful_login_timestamp {
-            println!("Last Login:         {}", format_duration_ago(ts));
+        if let Some(ts) = service_state.last_successful_login_timestamp {
+            println!("Last Login:         {}", state::format_duration_ago(ts));
         }
 
-        if let Some(portal) = state.last_portal_detected {
+        if let Some(portal) = service_state.last_portal_detected {
             println!("Last Portal:        {}", portal);
         }
     }
@@ -628,12 +403,10 @@ async fn handle_windows_service_command(cmd: ServiceCommands) -> Result<()> {
             let executable_path = env::current_exe()?;
             let service_manager = ServiceManager::new(executable_path);
 
-            // Prompt for credentials first
             let username = prompt_input("Enter LDAP Username: ", false).map_err(AppError::from)?;
             let password = prompt_input("Enter LDAP Password: ", true).map_err(AppError::from)?;
-            service_manager.store_credentials(&username, &password)?;
+            credentials::store_credentials(&username, &password)?;
 
-            // Prompt for Windows service account
             println!("\nWindows Service Account Configuration");
             println!("Leave blank to run as the current user.");
             let account = prompt_input("Service account (e.g., .\\username): ", false)
@@ -693,13 +466,10 @@ async fn main() {
         Some(Commands::Status) => show_status().await,
         Some(Commands::Health) => health_check().await,
         Some(Commands::Logout { clear_credentials }) => logout_command(clear_credentials).await,
-        Some(Commands::Run) => run().await,
+        Some(Commands::Run) => daemon::run().await,
         #[cfg(target_os = "windows")]
         Some(Commands::Service(cmd)) => handle_windows_service_command(cmd).await,
-        None => {
-            // Default: run the service
-            run().await
-        }
+        None => daemon::run().await,
     };
 
     if let Err(e) = result {

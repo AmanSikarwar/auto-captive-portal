@@ -18,8 +18,9 @@ download_binary() {
         "Darwin x86_64") asset_name="acp-script-macos-x86_64" ;;
         "Darwin arm64") asset_name="acp-script-macos-arm64" ;;
         "Linux x86_64") asset_name="acp-script-linux-amd64" ;;
+        "Linux aarch64") asset_name="acp-script-linux-arm64" ;;
         *)
-            echo "Error: Unsupported platform: $(uname -sm). Supported platforms are: Darwin x86_64, Darwin arm64, Linux x86_64." >&2
+            echo "Error: Unsupported platform: $(uname -sm). Supported platforms are: Darwin x86_64, Darwin arm64, Linux x86_64, Linux aarch64." >&2
             exit 1
             ;;
     esac
@@ -123,6 +124,15 @@ uninstall_service() {
         fi
     else
         echo "    Binary not found (may already be removed)"
+    fi
+
+    echo "  Removing logs and state files..."
+    local data_dir="$HOME/.local/share/acp"
+    if [[ -d "$data_dir" ]]; then
+        rm -rf "$data_dir"
+        echo "    Data directory removed: $data_dir"
+    else
+        echo "    Data directory not found (may already be removed)"
     fi
 
     echo "Auto Captive Portal Service uninstalled successfully."

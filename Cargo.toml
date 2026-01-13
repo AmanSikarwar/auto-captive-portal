@@ -1,6 +1,6 @@
 [package]
 name = "acp-script"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 build = "build.rs"
 
@@ -8,7 +8,7 @@ build = "build.rs"
 
 [dependencies]
 regex = "1.12.2"
-reqwest = { version = "0.13.1", features = ["default-tls"] }
+reqwest = { version = "0.13.1", features = ["default-tls", "form"] }
 tokio = { version = "1.49.0", features = ["full"] }
 keyring = { version = "3.6.3", features = [
     "apple-native",
@@ -26,7 +26,6 @@ netwatcher = "0.4.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 clap = { version = "4.5", features = ["derive"] }
-chrono = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"

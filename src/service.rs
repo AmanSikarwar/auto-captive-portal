@@ -1,14 +1,8 @@
+use crate::credentials::SERVICE_NAME;
 use crate::error::{AppError, Result};
-use keyring::Entry;
 use log::{error, info};
 use std::fs;
 use std::path::PathBuf;
-
-pub const SERVICE_NAME: &str = if cfg!(target_os = "macos") {
-    "com.user.acp"
-} else {
-    "acp"
-};
 
 pub struct ServiceManager {
     executable_path: PathBuf,
@@ -19,16 +13,6 @@ impl ServiceManager {
         Self { executable_path }
     }
 
-    pub fn store_credentials(&self, username: &str, password: &str) -> Result<()> {
-        let username_entry: Entry = Entry::new(SERVICE_NAME, "ldap_username")?;
-        username_entry.set_password(username)?;
-
-        let password_entry: Entry = Entry::new(SERVICE_NAME, "ldap_password")?;
-        password_entry.set_password(password)?;
-
-        Ok(())
-    }
-
     #[cfg(target_os = "macos")]
     pub fn create_service(&self) -> Result<()> {
         let plist_path: PathBuf = dirs::home_dir()
@@ -36,7 +20,9 @@ impl ServiceManager {
             .join("Library/LaunchAgents")
             .join(format!("{SERVICE_NAME}.plist"));
 
-        fs::create_dir_all(plist_path.parent().unwrap())?;
+        if let Some(parent) = plist_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
         let plist_content = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -165,13 +151,11 @@ WantedBy=default.target"#,
         Ok(())
     }
 
-    /// Windows service creation with user account support
     #[cfg(target_os = "windows")]
     pub fn create_service(&self) -> Result<()> {
         self.create_service_with_account(None, None)
     }
 
-    /// Windows service creation with optional user account
     #[cfg(target_os = "windows")]
     pub fn create_service_with_account(
         &self,
@@ -188,7 +172,6 @@ WantedBy=default.target"#,
 
         info!("Installing Windows service...");
 
-        // Register event log source
         if let Err(e) = crate::logging::register_event_log() {
             error!("Warning: Failed to register event log: {}", e);
         }
@@ -197,7 +180,12 @@ WantedBy=default.target"#,
             None::<&str>,
             ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
         )
-        .map_err(|e| AppError::Service(format!("Failed to connect to Service Control Manager: {}", e)))?;
+        .map_err(|e| {
+            AppError::Service(format!(
+                "Failed to connect to Service Control Manager: {}",
+                e
+            ))
+        })?;
 
         let service_info = ServiceInfo {
             name: OsString::from(SERVICE_NAME),
@@ -213,15 +201,16 @@ WantedBy=default.target"#,
         };
 
         let service = manager
-            .create_service(&service_info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START)
+            .create_service(
+                &service_info,
+                ServiceAccess::CHANGE_CONFIG | ServiceAccess::START,
+            )
             .map_err(|e| AppError::Service(format!("Failed to create service: {}", e)))?;
 
-        // Set service description
         service
             .set_description("Automatic captive portal login service for IIT Mandi network")
             .map_err(|e| AppError::Service(format!("Failed to set service description: {}", e)))?;
 
-        // Start the service
         service
             .start::<OsString>(&[])
             .map_err(|e| AppError::Service(format!("Failed to start service: {}", e)))?;
@@ -231,56 +220,6 @@ WantedBy=default.target"#,
     }
 }
 
-#[allow(dead_code)]
-pub async fn restart_service() -> Result<()> {
-    info!("Restarting service: {SERVICE_NAME}");
-
-    #[cfg(target_os = "linux")]
-    {
-        let output = std::process::Command::new("systemctl")
-            .args(["--user", "restart", SERVICE_NAME])
-            .output()?;
-
-        if !output.status.success() {
-            error!(
-                "Failed to restart service: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return Err(AppError::Service(
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            ));
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let output: std::process::Output = std::process::Command::new("launchctl")
-            .args(["kickstart", "-k", SERVICE_NAME])
-            .output()?;
-
-        if !output.status.success() {
-            error!(
-                "Failed to restart service: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return Err(AppError::Service(
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            ));
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        windows_service_control::stop_service()?;
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        windows_service_control::start_service()?;
-    }
-
-    info!("Service restarted successfully.");
-    Ok(())
-}
-
-/// Windows service control functions
 #[cfg(target_os = "windows")]
 pub mod windows_service_control {
     use super::*;
@@ -292,11 +231,9 @@ pub mod windows_service_control {
     };
 
     pub fn start_service() -> Result<()> {
-        let manager = WinServiceManager::local_computer(
-            None::<&str>,
-            ServiceManagerAccess::CONNECT,
-        )
-        .map_err(|e| AppError::Service(format!("Failed to connect to SCM: {}", e)))?;
+        let manager =
+            WinServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+                .map_err(|e| AppError::Service(format!("Failed to connect to SCM: {}", e)))?;
 
         let service = manager
             .open_service(SERVICE_NAME, ServiceAccess::START)
@@ -311,11 +248,9 @@ pub mod windows_service_control {
     }
 
     pub fn stop_service() -> Result<()> {
-        let manager = WinServiceManager::local_computer(
-            None::<&str>,
-            ServiceManagerAccess::CONNECT,
-        )
-        .map_err(|e| AppError::Service(format!("Failed to connect to SCM: {}", e)))?;
+        let manager =
+            WinServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+                .map_err(|e| AppError::Service(format!("Failed to connect to SCM: {}", e)))?;
 
         let service = manager
             .open_service(SERVICE_NAME, ServiceAccess::STOP)
@@ -325,7 +260,6 @@ pub mod windows_service_control {
             .stop()
             .map_err(|e| AppError::Service(format!("Failed to stop service: {}", e)))?;
 
-        // Wait for service to stop
         std::thread::sleep(Duration::from_secs(2));
 
         info!("Service stopped successfully.");
@@ -333,26 +267,21 @@ pub mod windows_service_control {
     }
 
     pub fn uninstall_service() -> Result<()> {
-        let manager = WinServiceManager::local_computer(
-            None::<&str>,
-            ServiceManagerAccess::CONNECT,
-        )
-        .map_err(|e| AppError::Service(format!("Failed to connect to SCM: {}", e)))?;
+        let manager =
+            WinServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+                .map_err(|e| AppError::Service(format!("Failed to connect to SCM: {}", e)))?;
 
         let service = manager
             .open_service(SERVICE_NAME, ServiceAccess::STOP | ServiceAccess::DELETE)
             .map_err(|e| AppError::Service(format!("Failed to open service: {}", e)))?;
 
-        // Stop the service if running
         let _ = service.stop();
         std::thread::sleep(Duration::from_secs(2));
 
-        // Delete the service
         service
             .delete()
             .map_err(|e| AppError::Service(format!("Failed to delete service: {}", e)))?;
 
-        // Deregister event log
         if let Err(e) = crate::logging::deregister_event_log() {
             error!("Warning: Failed to deregister event log: {}", e);
         }
@@ -362,18 +291,17 @@ pub mod windows_service_control {
     }
 }
 
-/// Windows service main entry point
 #[cfg(target_os = "windows")]
 pub mod windows_service_main {
+    use log::info;
     use std::ffi::OsString;
     use std::sync::mpsc;
     use std::time::Duration;
-    use log::info;
     use windows_service::{
         define_windows_service,
         service::{
-            ServiceControl, ServiceControlAccept, ServiceExitCode,
-            ServiceState, ServiceStatus, ServiceType,
+            ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
+            ServiceType,
         },
         service_control_handler::{self, ServiceControlHandlerResult},
         service_dispatcher,
@@ -381,9 +309,8 @@ pub mod windows_service_main {
 
     define_windows_service!(ffi_service_main, service_main);
 
-    /// Run the application as a Windows service
     pub fn run_as_windows_service() -> windows_service::Result<()> {
-        service_dispatcher::start(super::SERVICE_NAME, ffi_service_main)
+        service_dispatcher::start(crate::credentials::SERVICE_NAME, ffi_service_main)
     }
 
     fn service_main(_arguments: Vec<OsString>) {
@@ -407,12 +334,9 @@ pub mod windows_service_main {
             }
         };
 
-        let status_handle = service_control_handler::register(
-            super::SERVICE_NAME,
-            event_handler,
-        )?;
+        let status_handle =
+            service_control_handler::register(crate::credentials::SERVICE_NAME, event_handler)?;
 
-        // Report service as running
         status_handle.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
             current_state: ServiceState::Running,
@@ -425,13 +349,9 @@ pub mod windows_service_main {
 
         info!("Windows service started and running");
 
-        // Create async runtime and run the main loop
         let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-        rt.block_on(async {
-            run_service_loop(shutdown_rx).await
-        });
+        rt.block_on(async { run_service_loop(shutdown_rx).await });
 
-        // Report service as stopped
         status_handle.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
             current_state: ServiceState::Stopped,
@@ -447,15 +367,9 @@ pub mod windows_service_main {
     }
 
     async fn run_service_loop(shutdown_rx: mpsc::Receiver<()>) {
-        use crate::captive_portal;
-        use crate::error::AppError;
-        use crate::notifications;
-        use keyring::Entry;
-        use log::{error, info};
-        use tokio::sync::mpsc as tokio_mpsc;
+        use log::error;
 
-        // Get credentials
-        let (username, password) = match get_credentials_internal() {
+        let (username, password) = match crate::credentials::get_credentials() {
             Ok(creds) => creds,
             Err(e) => {
                 error!("Failed to get credentials: {}", e);
@@ -463,120 +377,6 @@ pub mod windows_service_main {
             }
         };
 
-        const MAX_DELAY_SECS: u64 = 1800;
-        const MIN_DELAY_SECS: u64 = 10;
-        let mut sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
-
-        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
-
-        let _watcher_handle = match netwatcher::watch_interfaces(move |update| {
-            if update.diff.added.is_empty()
-                && update.diff.removed.is_empty()
-                && update.diff.modified.is_empty()
-            {
-                return;
-            }
-
-            let has_relevant_change = !update.diff.added.is_empty()
-                || update.diff.modified.values().any(|d| !d.addrs_added.is_empty());
-
-            if has_relevant_change {
-                info!("Network change detected");
-                let _ = tx.send(());
-            }
-        }) {
-            Ok(handle) => handle,
-            Err(e) => {
-                error!("Failed to start network watcher: {}", e);
-                return;
-            }
-        };
-
-        info!("Performing initial captive portal check...");
-        if let Ok(true) = check_and_login_internal(&username, &password).await {
-            sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
-        }
-
-        loop {
-            // Check for shutdown signal (non-blocking)
-            if shutdown_rx.try_recv().is_ok() {
-                info!("Shutdown signal received, exiting service loop");
-                break;
-            }
-
-            tokio::select! {
-                biased;
-
-                Some(_) = rx.recv() => {
-                    info!("Network change signal received");
-                    tokio::time::sleep(Duration::from_secs(3)).await;
-
-                    if let Ok(true) = check_and_login_internal(&username, &password).await {
-                        sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
-                    } else {
-                        sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
-                    }
-                },
-
-                _ = tokio::time::sleep(sleep_duration) => {
-                    info!("Polling interval elapsed");
-                    match check_and_login_internal(&username, &password).await {
-                        Ok(true) => {
-                            sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
-                        },
-                        Ok(false) => {
-                            let current_secs = sleep_duration.as_secs();
-                            let next_secs = (current_secs / 2).max(MIN_DELAY_SECS);
-                            sleep_duration = Duration::from_secs(next_secs);
-                        },
-                        Err(_) => {
-                            sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
-                        }
-                    }
-                },
-            }
-        }
-    }
-
-    fn get_credentials_internal() -> crate::error::Result<(String, String)> {
-        let username_entry = Entry::new(super::SERVICE_NAME, "ldap_username")
-            .map_err(crate::error::AppError::from)?;
-        let password_entry = Entry::new(super::SERVICE_NAME, "ldap_password")
-            .map_err(crate::error::AppError::from)?;
-        Ok((
-            username_entry.get_password().map_err(crate::error::AppError::from)?,
-            password_entry.get_password().map_err(crate::error::AppError::from)?,
-        ))
-    }
-
-    async fn check_and_login_internal(username: &str, password: &str) -> crate::error::Result<bool> {
-        use crate::captive_portal;
-        use crate::notifications;
-        use log::{error, info};
-
-        match captive_portal::check_captive_portal().await {
-            Ok(Some((url, magic))) => {
-                info!("Captive portal detected at {}", url);
-                match captive_portal::login_with_retry(&url, username, password, &magic).await {
-                    Ok(_) => {
-                        notifications::send_notification("Logged into captive portal successfully.").await;
-                        info!("Login successful");
-                        Ok(true)
-                    }
-                    Err(e) => {
-                        error!("Login failed: {}", e);
-                        Err(e)
-                    }
-                }
-            }
-            Ok(None) => {
-                info!("No captive portal detected");
-                Ok(false)
-            }
-            Err(e) => {
-                error!("Portal check failed: {}", e);
-                Err(e)
-            }
-        }
+        crate::daemon::run_with_shutdown(&username, &password, shutdown_rx).await;
     }
 }

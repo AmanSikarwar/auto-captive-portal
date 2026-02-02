@@ -16,7 +16,7 @@ keyring = { version = "3.6.3", features = [
     "windows-native",
 ] }
 dirs = "6.0.0"
-thiserror = "2.0.17"
+thiserror = "2.0.18"
 notify-rust = "4.11.7"
 log = "0.4.29"
 fern = "0.7"

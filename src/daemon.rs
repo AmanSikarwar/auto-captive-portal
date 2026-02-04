@@ -131,16 +131,11 @@ pub async fn run_with_credentials(username: &str, password: &str) -> Result<()> 
             biased;
 
             result = shutdown_signal() => {
-                match result {
-                    Ok(_) => {
-                        info!("Shutdown signal received, updating state and exiting...");
-                        state::update_state_file(None, false).ok();
-                    }
-                    Err(e) => {
-                        error!("Error setting up shutdown signal handler: {}", e);
-                        state::update_state_file(None, false).ok();
-                    }
+                if let Err(e) = result {
+                    error!("Error setting up shutdown signal handler: {}", e);
                 }
+                info!("Shutdown signal received, updating state and exiting...");
+                state::update_state_file(None, false).ok();
                 break;
             },
 

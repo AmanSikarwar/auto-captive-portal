@@ -3,6 +3,25 @@ use log::LevelFilter;
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 
+const MAX_LOG_SIZE_BYTES: u64 = 5 * 1024 * 1024; // 5 MB
+const MAX_LOG_FILES: usize = 3;
+
+fn rotate_logs_if_needed(log_path: &PathBuf) {
+    if let Ok(metadata) = fs::metadata(log_path)
+        && metadata.len() >= MAX_LOG_SIZE_BYTES
+    {
+        // Rotate existing log files
+        for i in (1..MAX_LOG_FILES).rev() {
+            let old_path = log_path.with_extension(format!("log.{}", i));
+            let new_path = log_path.with_extension(format!("log.{}", i + 1));
+            let _ = fs::rename(&old_path, &new_path);
+        }
+        // Rotate current log to .1
+        let rotated_path = log_path.with_extension("log.1");
+        let _ = fs::rename(log_path, &rotated_path);
+    }
+}
+
 fn get_log_file_path() -> Result<PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -54,21 +73,21 @@ pub fn init_logging(is_service: bool) -> Result<()> {
     }
 
     match get_log_file_path() {
-        Ok(log_path) => match OpenOptions::new().create(true).append(true).open(&log_path) {
-            Ok(log_file) => {
-                dispatch = dispatch.chain(log_file);
+        Ok(log_path) => {
+            rotate_logs_if_needed(&log_path);
+            match OpenOptions::new().create(true).append(true).open(&log_path) {
+                Ok(log_file) => {
+                    dispatch = dispatch.chain(log_file);
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to open log file {:?}: {}", log_path, e);
+                }
             }
-            Err(e) => {
-                eprintln!("Warning: Failed to open log file {:?}: {}", log_path, e);
-            }
-        },
+        }
         Err(e) => {
             eprintln!("Warning: Failed to get log file path: {}", e);
         }
     }
-
-    #[cfg(target_os = "windows")]
-    if is_service {}
 
     dispatch.apply().map_err(|e| {
         crate::error::AppError::Service(format!("Failed to initialize logging: {}", e))

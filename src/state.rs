@@ -32,7 +32,6 @@ pub fn get_state_file_path() -> Result<PathBuf> {
     }
 }
 
-#[allow(dead_code)]
 pub fn load_state() -> Result<ServiceState> {
     let state_path = get_state_file_path()?;
     if state_path.exists() {
@@ -46,15 +45,7 @@ pub fn load_state() -> Result<ServiceState> {
 
 pub fn update_state_file(portal_url: Option<&str>, login_success: bool) -> Result<()> {
     let state_path = get_state_file_path()?;
-
-    let mut state: ServiceState = if state_path.exists() {
-        fs::read_to_string(&state_path)
-            .ok()
-            .and_then(|contents| serde_json::from_str(&contents).ok())
-            .unwrap_or_default()
-    } else {
-        ServiceState::default()
-    };
+    let mut state = load_state().unwrap_or_default();
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -213,8 +213,8 @@ pub async fn check_captive_portal() -> Result<Option<(String, String)>> {
 
     for attempt in 1..=max_check_retries {
         match client.get(check_url).send().await {
-            Ok(google_check_resp) => {
-                return check_portal_response(google_check_resp, &client).await;
+            Ok(connectivity_check_resp) => {
+                return check_portal_response(connectivity_check_resp, &client).await;
             }
             Err(e) => {
                 last_error = Some(e);

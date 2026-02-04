@@ -10,15 +10,59 @@ fn rotate_logs_if_needed(log_path: &PathBuf) {
     if let Ok(metadata) = fs::metadata(log_path)
         && metadata.len() >= MAX_LOG_SIZE_BYTES
     {
-        // Rotate existing log files
+        // Remove the oldest archive first (required on Windows where rename fails if dest exists)
+        let oldest_path = log_path.with_extension(format!("log.{}", MAX_LOG_FILES));
+        if oldest_path.exists()
+            && let Err(e) = fs::remove_file(&oldest_path)
+        {
+            eprintln!(
+                "Warning: Failed to remove oldest log archive {:?}: {}",
+                oldest_path, e
+            );
+        }
+
+        // Rotate existing log files (in reverse order to avoid overwriting)
         for i in (1..MAX_LOG_FILES).rev() {
             let old_path = log_path.with_extension(format!("log.{}", i));
             let new_path = log_path.with_extension(format!("log.{}", i + 1));
-            let _ = fs::rename(&old_path, &new_path);
+            if old_path.exists() {
+                // Remove destination if it exists (Windows compatibility)
+                if new_path.exists()
+                    && let Err(e) = fs::remove_file(&new_path)
+                {
+                    eprintln!(
+                        "Warning: Failed to remove {:?} before rotation: {}",
+                        new_path, e
+                    );
+                    continue;
+                }
+                if let Err(e) = fs::rename(&old_path, &new_path) {
+                    eprintln!(
+                        "Warning: Failed to rotate log {:?} -> {:?}: {}",
+                        old_path, new_path, e
+                    );
+                }
+            }
         }
+
         // Rotate current log to .1
         let rotated_path = log_path.with_extension("log.1");
-        let _ = fs::rename(log_path, &rotated_path);
+        // Remove existing .1 if it exists (Windows compatibility)
+        if rotated_path.exists()
+            && let Err(e) = fs::remove_file(&rotated_path)
+        {
+            eprintln!(
+                "Warning: Failed to remove {:?} before rotation: {}",
+                rotated_path, e
+            );
+            return;
+        }
+        if let Err(e) = fs::rename(log_path, &rotated_path) {
+            eprintln!(
+                "Warning: Failed to rotate current log {:?} -> {:?}: {}",
+                log_path, rotated_path, e
+            );
+        }
     }
 }
 

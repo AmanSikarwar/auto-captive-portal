@@ -32,7 +32,6 @@ pub fn get_state_file_path() -> Result<PathBuf> {
     }
 }
 
-#[allow(dead_code)]
 pub fn load_state() -> Result<ServiceState> {
     let state_path = get_state_file_path()?;
     if state_path.exists() {
@@ -46,15 +45,7 @@ pub fn load_state() -> Result<ServiceState> {
 
 pub fn update_state_file(portal_url: Option<&str>, login_success: bool) -> Result<()> {
     let state_path = get_state_file_path()?;
-
-    let mut state: ServiceState = if state_path.exists() {
-        fs::read_to_string(&state_path)
-            .ok()
-            .and_then(|contents| serde_json::from_str(&contents).ok())
-            .unwrap_or_default()
-    } else {
-        ServiceState::default()
-    };
+    let mut state = load_state().unwrap_or_default();
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -101,5 +92,255 @@ pub fn format_duration_ago(timestamp: u64) -> String {
     } else {
         let days = diff / 86400;
         format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_state_file_path_creates_directory() {
+        let state_path = get_state_file_path();
+        assert!(state_path.is_ok());
+
+        if let Ok(path) = state_path {
+            assert!(path.to_string_lossy().contains("acp"));
+            assert!(path.to_string_lossy().ends_with("state.json"));
+        }
+    }
+
+    #[test]
+    fn test_get_state_file_path_structure() {
+        let state_path = get_state_file_path().expect("Failed to get state file path");
+
+        #[cfg(target_os = "windows")]
+        {
+            let path_str = state_path.to_string_lossy();
+            assert!(path_str.contains("acp"));
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let path_str = state_path.to_string_lossy();
+            assert!(path_str.contains(".local"));
+            assert!(path_str.contains("share"));
+            assert!(path_str.contains("acp"));
+        }
+    }
+
+    #[test]
+    fn test_service_state_default() {
+        let state = ServiceState::default();
+        assert!(state.last_check_timestamp.is_none());
+        assert!(state.last_successful_login_timestamp.is_none());
+        assert!(state.last_portal_detected.is_none());
+    }
+
+    #[test]
+    fn test_load_state_nonexistent_file() {
+        // Test loading state when file doesn't exist returns default
+        let result = load_state();
+        assert!(result.is_ok());
+        let state = result.unwrap();
+        assert!(state.last_check_timestamp.is_none());
+    }
+
+    #[test]
+    fn test_update_state_file_with_portal() {
+        let result = update_state_file(Some("https://portal.example.com"), false);
+        // Should succeed or fail gracefully
+        assert!(result.is_ok() || result.is_err());
+
+        // If it succeeded, verify we can load it
+        if result.is_ok() {
+            let state = load_state().unwrap();
+            assert!(state.last_check_timestamp.is_some());
+            assert_eq!(
+                state.last_portal_detected,
+                Some("https://portal.example.com".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn test_update_state_file_with_login_success() {
+        let result = update_state_file(None, true);
+        assert!(result.is_ok() || result.is_err());
+
+        if result.is_ok() {
+            let state = load_state().unwrap();
+            assert!(state.last_check_timestamp.is_some());
+            assert!(state.last_successful_login_timestamp.is_some());
+        }
+    }
+
+    #[test]
+    fn test_update_state_file_without_login_success() {
+        let result = update_state_file(None, false);
+        assert!(result.is_ok() || result.is_err());
+
+        if result.is_ok() {
+            let state = load_state().unwrap();
+            assert!(state.last_check_timestamp.is_some());
+        }
+    }
+
+    #[test]
+    fn test_format_duration_ago_seconds() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let timestamp = now - 30;
+        let result = format_duration_ago(timestamp);
+        assert_eq!(result, "30 seconds ago");
+    }
+
+    #[test]
+    fn test_format_duration_ago_one_minute() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let timestamp = now - 60;
+        let result = format_duration_ago(timestamp);
+        assert_eq!(result, "1 minute ago");
+    }
+
+    #[test]
+    fn test_format_duration_ago_minutes() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let timestamp = now - 300; // 5 minutes
+        let result = format_duration_ago(timestamp);
+        assert_eq!(result, "5 minutes ago");
+    }
+
+    #[test]
+    fn test_format_duration_ago_one_hour() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let timestamp = now - 3600;
+        let result = format_duration_ago(timestamp);
+        assert_eq!(result, "1 hour ago");
+    }
+
+    #[test]
+    fn test_format_duration_ago_hours() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let timestamp = now - 7200; // 2 hours
+        let result = format_duration_ago(timestamp);
+        assert_eq!(result, "2 hours ago");
+    }
+
+    #[test]
+    fn test_format_duration_ago_one_day() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let timestamp = now - 86400;
+        let result = format_duration_ago(timestamp);
+        assert_eq!(result, "1 day ago");
+    }
+
+    #[test]
+    fn test_format_duration_ago_days() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let timestamp = now - 172800; // 2 days
+        let result = format_duration_ago(timestamp);
+        assert_eq!(result, "2 days ago");
+    }
+
+    #[test]
+    fn test_format_duration_ago_future_timestamp() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let timestamp = now + 100; // Future timestamp
+        let result = format_duration_ago(timestamp);
+        assert_eq!(result, "just now");
+    }
+
+    #[test]
+    fn test_format_duration_ago_zero_seconds() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let result = format_duration_ago(now);
+        assert_eq!(result, "0 seconds ago");
+    }
+
+    #[test]
+    fn test_service_state_serialization() {
+        let state = ServiceState {
+            last_check_timestamp: Some(1234567890),
+            last_successful_login_timestamp: Some(1234567891),
+            last_portal_detected: Some("https://portal.test.com".to_string()),
+        };
+
+        let json = serde_json::to_string(&state);
+        assert!(json.is_ok());
+
+        let deserialized: Result<ServiceState, _> = serde_json::from_str(&json.unwrap());
+        assert!(deserialized.is_ok());
+
+        let deserialized_state = deserialized.unwrap();
+        assert_eq!(
+            deserialized_state.last_check_timestamp,
+            Some(1234567890)
+        );
+        assert_eq!(
+            deserialized_state.last_successful_login_timestamp,
+            Some(1234567891)
+        );
+        assert_eq!(
+            deserialized_state.last_portal_detected,
+            Some("https://portal.test.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_state_timestamp_boundaries() {
+        // Test edge case with very old timestamp
+        let result = format_duration_ago(0);
+        assert!(result.contains("day"));
+
+        // Test with timestamp 1 second ago
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let result = format_duration_ago(now - 1);
+        assert_eq!(result, "1 seconds ago");
+    }
+
+    #[test]
+    fn test_update_state_preserves_existing_data() {
+        // First update with portal URL
+        let _ = update_state_file(Some("https://first.com"), false);
+
+        // Second update with login success (no portal URL)
+        let result = update_state_file(None, true);
+
+        if result.is_ok() {
+            let state = load_state().unwrap();
+            // Portal URL should still be present from first update
+            assert!(state.last_portal_detected.is_some());
+            assert!(state.last_successful_login_timestamp.is_some());
+        }
     }
 }

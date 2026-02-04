@@ -10,6 +10,15 @@ const MAX_LOGIN_RETRIES: u32 = 3;
 const INITIAL_RETRY_DELAY_SECS: u64 = 2;
 const LOGOUT_URL: &str = "https://login.iitmandi.ac.in:1003/logout?";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_CONNECTIVITY_CHECK_URL: &str = "http://clients3.google.com/generate_204";
+
+fn get_connectivity_check_url() -> &'static str {
+    static URL: OnceLock<String> = OnceLock::new();
+    URL.get_or_init(|| {
+        std::env::var("ACP_CONNECTIVITY_URL")
+            .unwrap_or_else(|_| DEFAULT_CONNECTIVITY_CHECK_URL.to_string())
+    })
+}
 
 fn portal_url_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -62,10 +71,10 @@ pub async fn logout() -> Result<()> {
 }
 
 pub async fn verify_internet_connectivity() -> Result<bool> {
-    let google_check_url: &str = "http://clients3.google.com/generate_204";
+    let check_url = get_connectivity_check_url();
     let client = get_client()?;
 
-    match client.get(google_check_url).send().await {
+    match client.get(check_url).send().await {
         Ok(resp) if resp.status() == StatusCode::NO_CONTENT => {
             info!("Internet connectivity verified: received expected 204 response");
             Ok(true)
@@ -197,13 +206,13 @@ pub fn extract_magic_value(html: &str) -> Option<String> {
 }
 
 pub async fn check_captive_portal() -> Result<Option<(String, String)>> {
-    let google_check_url: &str = "http://clients3.google.com/generate_204";
+    let check_url = get_connectivity_check_url();
     let max_check_retries = 2;
     let mut last_error: Option<reqwest::Error> = None;
     let client = get_client()?;
 
     for attempt in 1..=max_check_retries {
-        match client.get(google_check_url).send().await {
+        match client.get(check_url).send().await {
             Ok(google_check_resp) => {
                 return check_portal_response(google_check_resp, &client).await;
             }
@@ -329,5 +338,216 @@ mod tests {
                     .to_string()
             )
         );
+    }
+
+    #[test]
+    fn test_extract_portal_url_multiple_matches() {
+        let html = r#"
+            <script>window.location="https://first.com"</script>
+            <script>window.location="https://second.com"</script>
+        "#;
+        // Should extract the first match
+        let result = extract_captive_portal_url(html);
+        assert!(result.is_some());
+        assert_eq!(result, Some("https://first.com".to_string()));
+    }
+
+    #[test]
+    fn test_extract_portal_url_empty_string() {
+        let html = "";
+        assert_eq!(extract_captive_portal_url(html), None);
+    }
+
+    #[test]
+    fn test_extract_portal_url_with_whitespace() {
+        let html = r#"  window.location="https://portal.test.com"  "#;
+        assert_eq!(
+            extract_captive_portal_url(html),
+            Some("https://portal.test.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_magic_value_multiple_inputs() {
+        let html = r#"
+            <input type="hidden" name="other" value="other123">
+            <input type="hidden" name="magic" value="correct_magic">
+            <input type="hidden" name="another" value="another456">
+        "#;
+        assert_eq!(
+            extract_magic_value(html),
+            Some("correct_magic".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_magic_value_with_special_characters() {
+        let html =
+            r#"<input type="hidden" name="magic" value="abc-123_DEF.456+789=xyz/test@domain">"#;
+        assert_eq!(
+            extract_magic_value(html),
+            Some("abc-123_DEF.456+789=xyz/test@domain".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_magic_value_empty_html() {
+        let html = "";
+        assert_eq!(extract_magic_value(html), None);
+    }
+
+    #[test]
+    fn test_extract_magic_value_whitespace_value() {
+        let html = r#"<input type="hidden" name="magic" value="   ">"#;
+        // Should still extract non-empty whitespace
+        assert_eq!(extract_magic_value(html), Some("   ".to_string()));
+    }
+
+    #[test]
+    fn test_extract_portal_url_with_path_and_query() {
+        let html =
+            r#"window.location="https://login.example.com:8443/portal/login?sessionid=abc123""#;
+        assert_eq!(
+            extract_captive_portal_url(html),
+            Some("https://login.example.com:8443/portal/login?sessionid=abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_portal_url_http_protocol() {
+        let html = r#"window.location="http://portal.insecure.com""#;
+        assert_eq!(
+            extract_captive_portal_url(html),
+            Some("http://portal.insecure.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_magic_value_case_sensitive() {
+        // "magic" should be lowercase to match
+        let html = r#"<input type="hidden" name="MAGIC" value="uppercase_magic">"#;
+        // This should not match because the regex looks for lowercase "magic"
+        assert_eq!(extract_magic_value(html), None);
+    }
+
+    #[test]
+    fn test_extract_magic_value_single_quotes() {
+        // Test with single quotes instead of double quotes (should not match)
+        let html = r#"<input type='hidden' name='magic' value='single_quote_magic'>"#;
+        // The regex specifically looks for double quotes
+        assert_eq!(extract_magic_value(html), None);
+    }
+
+    #[test]
+    fn test_extract_portal_url_with_fragment() {
+        let html = r#"window.location="https://portal.test.com/login#section""#;
+        assert_eq!(
+            extract_captive_portal_url(html),
+            Some("https://portal.test.com/login#section".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_portal_url_malformed_no_quotes() {
+        let html = r#"window.location=https://portal.test.com"#;
+        assert_eq!(extract_captive_portal_url(html), None);
+    }
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(MAX_LOGIN_RETRIES, 3);
+        assert_eq!(INITIAL_RETRY_DELAY_SECS, 2);
+        assert_eq!(LOGOUT_URL, "https://login.iitmandi.ac.in:1003/logout?");
+        assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(
+            DEFAULT_CONNECTIVITY_CHECK_URL,
+            "http://clients3.google.com/generate_204"
+        );
+    }
+
+    #[test]
+    fn test_get_connectivity_check_url_default() {
+        // Test that default URL is returned when env var is not set
+        std::env::remove_var("ACP_CONNECTIVITY_URL");
+        let url = get_connectivity_check_url();
+        assert_eq!(url, DEFAULT_CONNECTIVITY_CHECK_URL);
+    }
+
+    #[test]
+    fn test_portal_url_regex_compilation() {
+        // Test that the regex compiles and can be used
+        let regex = portal_url_regex();
+        assert!(regex
+            .is_match(r#"window.location="https://example.com""#));
+    }
+
+    #[test]
+    fn test_magic_value_regex_compilation() {
+        // Test that the regex compiles and can be used
+        let regex = magic_value_regex();
+        assert!(regex.is_match(r#"<input type="hidden" name="magic" value="test">"#));
+    }
+
+    #[test]
+    fn test_extract_magic_value_long_value() {
+        // Test with a very long magic value
+        let long_value = "a".repeat(1000);
+        let html = format!(
+            r#"<input type="hidden" name="magic" value="{}">"#,
+            long_value
+        );
+        assert_eq!(extract_magic_value(&html), Some(long_value));
+    }
+
+    #[test]
+    fn test_extract_portal_url_long_url() {
+        // Test with a very long URL
+        let long_url = format!("https://portal.example.com/{}", "path/".repeat(100));
+        let html = format!(r#"window.location="{}""#, long_url);
+        assert_eq!(extract_captive_portal_url(&html), Some(long_url));
+    }
+
+    #[test]
+    fn test_extract_magic_value_with_encoded_characters() {
+        // Test with URL-encoded characters
+        let html = r#"<input type="hidden" name="magic" value="test%20value%2Bencoded">"#;
+        assert_eq!(
+            extract_magic_value(html),
+            Some("test%20value%2Bencoded".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_portal_url_with_ipv4() {
+        let html = r#"window.location="http://192.168.1.1/portal""#;
+        assert_eq!(
+            extract_captive_portal_url(html),
+            Some("http://192.168.1.1/portal".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_portal_url_with_ipv6() {
+        let html = r#"window.location="http://[2001:db8::1]/portal""#;
+        assert_eq!(
+            extract_captive_portal_url(html),
+            Some("http://[2001:db8::1]/portal".to_string())
+        );
+    }
+
+    #[test]
+    fn test_max_login_retries_positive() {
+        assert!(MAX_LOGIN_RETRIES > 0);
+    }
+
+    #[test]
+    fn test_initial_retry_delay_positive() {
+        assert!(INITIAL_RETRY_DELAY_SECS > 0);
+    }
+
+    #[test]
+    fn test_request_timeout_reasonable() {
+        assert!(REQUEST_TIMEOUT.as_secs() >= 5);
+        assert!(REQUEST_TIMEOUT.as_secs() <= 60);
     }
 }

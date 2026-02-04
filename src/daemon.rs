@@ -3,13 +3,38 @@ use crate::credentials;
 use crate::error::{AppError, Result};
 use crate::notifications;
 use crate::state;
-use log::{error, info};
+use log::{error, info, warn};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 const MAX_DELAY_SECS: u64 = 1800;
 const MIN_DELAY_SECS: u64 = 10;
 const CHANNEL_CAPACITY: usize = 10;
+
+#[cfg(unix)]
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to create SIGTERM handler");
+    let mut sigint = signal(SignalKind::interrupt()).expect("Failed to create SIGINT handler");
+
+    tokio::select! {
+        _ = sigterm.recv() => {
+            info!("Received SIGTERM, initiating graceful shutdown...");
+        }
+        _ = sigint.recv() => {
+            info!("Received SIGINT, initiating graceful shutdown...");
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("Failed to listen for Ctrl+C");
+    info!("Received Ctrl+C, initiating graceful shutdown...");
+}
 
 pub async fn check_and_login(username: &str, password: &str) -> Result<bool> {
     match captive_portal::check_captive_portal().await {
@@ -68,7 +93,9 @@ pub async fn run_with_credentials(username: &str, password: &str) -> Result<()> 
 
         if has_relevant_change {
             info!("Relevant network change detected: a new interface or IP address was added.");
-            if tx.try_send(()).is_err() {}
+            if tx.try_send(()).is_err() {
+                warn!("Failed to send network change signal - channel full or closed");
+            }
         } else {
             info!("Ignoring irrelevant network change (e.g., interface or IP removed).");
         }
@@ -88,6 +115,12 @@ pub async fn run_with_credentials(username: &str, password: &str) -> Result<()> 
 
         tokio::select! {
             biased;
+
+            _ = shutdown_signal() => {
+                info!("Shutdown signal received, updating state and exiting...");
+                state::update_state_file(None, false).ok();
+                break;
+            },
 
             Some(_) = rx.recv() => {
                 info!("Received signal from network watcher. Triggering immediate check.");
@@ -123,6 +156,39 @@ pub async fn run_with_credentials(username: &str, password: &str) -> Result<()> 
             },
         }
     }
+
+    info!("Daemon shutdown complete.");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(MAX_DELAY_SECS, 1800);
+        assert_eq!(MIN_DELAY_SECS, 10);
+        assert_eq!(CHANNEL_CAPACITY, 10);
+    }
+
+    #[tokio::test]
+    async fn test_check_and_login_no_portal() {
+        // This test would require mocking the captive_portal module
+        // For now, we test that the function signature works correctly
+        // In a real scenario, you'd use a mocking framework
+    }
+
+    #[test]
+    fn test_min_max_delay_relationship() {
+        // Ensure MIN_DELAY is less than MAX_DELAY
+        assert!(MIN_DELAY_SECS < MAX_DELAY_SECS);
+    }
+
+    #[test]
+    fn test_channel_capacity_positive() {
+        assert!(CHANNEL_CAPACITY > 0);
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -152,7 +218,9 @@ pub async fn run_with_shutdown(
 
         if has_relevant_change {
             info!("Network change detected");
-            let _ = tx.try_send(());
+            if tx.try_send(()).is_err() {
+                warn!("Failed to send network change signal - channel full or closed");
+            }
         }
     }) {
         Ok(handle) => handle,

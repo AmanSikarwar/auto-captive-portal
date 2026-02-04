@@ -15,8 +15,21 @@ const CHANNEL_CAPACITY: usize = 10;
 async fn shutdown_signal() {
     use tokio::signal::unix::{SignalKind, signal};
 
-    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to create SIGTERM handler");
-    let mut sigint = signal(SignalKind::interrupt()).expect("Failed to create SIGINT handler");
+    let mut sigterm = match signal(SignalKind::terminate()) {
+        Ok(sig) => sig,
+        Err(e) => {
+            error!("Failed to create SIGTERM handler: {}. The application will not handle SIGTERM signals gracefully.", e);
+            panic!("Failed to create SIGTERM handler: {}", e);
+        }
+    };
+
+    let mut sigint = match signal(SignalKind::interrupt()) {
+        Ok(sig) => sig,
+        Err(e) => {
+            error!("Failed to create SIGINT handler: {}. The application will not handle SIGINT signals gracefully.", e);
+            panic!("Failed to create SIGINT handler: {}", e);
+        }
+    };
 
     tokio::select! {
         _ = sigterm.recv() => {
@@ -30,9 +43,10 @@ async fn shutdown_signal() {
 
 #[cfg(not(unix))]
 async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("Failed to listen for Ctrl+C");
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        error!("Failed to listen for Ctrl+C: {}. The application will not handle Ctrl+C signals gracefully.", e);
+        panic!("Failed to listen for Ctrl+C: {}", e);
+    }
     info!("Received Ctrl+C, initiating graceful shutdown...");
 }
 

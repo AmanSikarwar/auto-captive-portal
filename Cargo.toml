@@ -7,7 +7,7 @@ build = "build.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-regex = "1.12.2"
+regex = "1.12.3"
 reqwest = { version = "0.13.1", features = ["default-tls", "form"] }
 tokio = { version = "1.49.0", features = ["full"] }
 keyring = { version = "3.6.3", features = [

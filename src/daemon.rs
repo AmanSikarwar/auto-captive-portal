@@ -12,11 +12,19 @@ const MIN_DELAY_SECS: u64 = 10;
 const CHANNEL_CAPACITY: usize = 10;
 
 #[cfg(unix)]
-async fn shutdown_signal() {
+async fn shutdown_signal() -> Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
 
-    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to create SIGTERM handler");
-    let mut sigint = signal(SignalKind::interrupt()).expect("Failed to create SIGINT handler");
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|e| {
+            error!("Failed to create SIGTERM handler: {}", e);
+            e
+        })?;
+    let mut sigint = signal(SignalKind::interrupt())
+        .map_err(|e| {
+            error!("Failed to create SIGINT handler: {}", e);
+            e
+        })?;
 
     tokio::select! {
         _ = sigterm.recv() => {
@@ -26,14 +34,20 @@ async fn shutdown_signal() {
             info!("Received SIGINT, initiating graceful shutdown...");
         }
     }
+
+    Ok(())
 }
 
 #[cfg(not(unix))]
-async fn shutdown_signal() {
+async fn shutdown_signal() -> Result<()> {
     tokio::signal::ctrl_c()
         .await
-        .expect("Failed to listen for Ctrl+C");
+        .map_err(|e| {
+            error!("Failed to listen for Ctrl+C: {}", e);
+            e
+        })?;
     info!("Received Ctrl+C, initiating graceful shutdown...");
+    Ok(())
 }
 
 pub async fn check_and_login(username: &str, password: &str) -> Result<bool> {
@@ -116,7 +130,10 @@ pub async fn run_with_credentials(username: &str, password: &str) -> Result<()> 
         tokio::select! {
             biased;
 
-            _ = shutdown_signal() => {
+            result = shutdown_signal() => {
+                if let Err(e) = result {
+                    error!("Error setting up shutdown signal handler: {}", e);
+                }
                 info!("Shutdown signal received, updating state and exiting...");
                 state::update_state_file(None, false).ok();
                 break;

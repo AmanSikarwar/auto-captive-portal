@@ -10,6 +10,15 @@ const MAX_LOGIN_RETRIES: u32 = 3;
 const INITIAL_RETRY_DELAY_SECS: u64 = 2;
 const LOGOUT_URL: &str = "https://login.iitmandi.ac.in:1003/logout?";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_CONNECTIVITY_CHECK_URL: &str = "http://clients3.google.com/generate_204";
+
+fn get_connectivity_check_url() -> &'static str {
+    static URL: OnceLock<String> = OnceLock::new();
+    URL.get_or_init(|| {
+        std::env::var("ACP_CONNECTIVITY_URL")
+            .unwrap_or_else(|_| DEFAULT_CONNECTIVITY_CHECK_URL.to_string())
+    })
+}
 
 fn portal_url_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -62,10 +71,10 @@ pub async fn logout() -> Result<()> {
 }
 
 pub async fn verify_internet_connectivity() -> Result<bool> {
-    let google_check_url: &str = "http://clients3.google.com/generate_204";
+    let check_url = get_connectivity_check_url();
     let client = get_client()?;
 
-    match client.get(google_check_url).send().await {
+    match client.get(check_url).send().await {
         Ok(resp) if resp.status() == StatusCode::NO_CONTENT => {
             info!("Internet connectivity verified: received expected 204 response");
             Ok(true)
@@ -197,15 +206,15 @@ pub fn extract_magic_value(html: &str) -> Option<String> {
 }
 
 pub async fn check_captive_portal() -> Result<Option<(String, String)>> {
-    let google_check_url: &str = "http://clients3.google.com/generate_204";
+    let check_url = get_connectivity_check_url();
     let max_check_retries = 2;
     let mut last_error: Option<reqwest::Error> = None;
     let client = get_client()?;
 
     for attempt in 1..=max_check_retries {
-        match client.get(google_check_url).send().await {
-            Ok(google_check_resp) => {
-                return check_portal_response(google_check_resp, &client).await;
+        match client.get(check_url).send().await {
+            Ok(connectivity_check_resp) => {
+                return check_portal_response(connectivity_check_resp, &client).await;
             }
             Err(e) => {
                 last_error = Some(e);

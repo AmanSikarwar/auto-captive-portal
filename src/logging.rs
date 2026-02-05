@@ -3,6 +3,69 @@ use log::LevelFilter;
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 
+const MAX_LOG_SIZE_BYTES: u64 = 5 * 1024 * 1024; // 5 MB
+const MAX_LOG_FILES: usize = 3;
+
+fn rotate_logs_if_needed(log_path: &PathBuf) {
+    if let Ok(metadata) = fs::metadata(log_path)
+        && metadata.len() >= MAX_LOG_SIZE_BYTES
+    {
+        // Remove the oldest archive first (required on Windows where rename fails if dest exists)
+        let oldest_path = log_path.with_extension(format!("log.{}", MAX_LOG_FILES));
+        if oldest_path.exists()
+            && let Err(e) = fs::remove_file(&oldest_path)
+        {
+            eprintln!(
+                "Warning: Failed to remove oldest log archive {:?}: {}",
+                oldest_path, e
+            );
+        }
+
+        // Rotate existing log files (in reverse order to avoid overwriting)
+        for i in (1..MAX_LOG_FILES).rev() {
+            let old_path = log_path.with_extension(format!("log.{}", i));
+            let new_path = log_path.with_extension(format!("log.{}", i + 1));
+            if old_path.exists() {
+                // Remove destination if it exists (Windows compatibility)
+                if new_path.exists()
+                    && let Err(e) = fs::remove_file(&new_path)
+                {
+                    eprintln!(
+                        "Warning: Failed to remove {:?} before rotation: {}",
+                        new_path, e
+                    );
+                    continue;
+                }
+                if let Err(e) = fs::rename(&old_path, &new_path) {
+                    eprintln!(
+                        "Warning: Failed to rotate log {:?} -> {:?}: {}",
+                        old_path, new_path, e
+                    );
+                }
+            }
+        }
+
+        // Rotate current log to .1
+        let rotated_path = log_path.with_extension("log.1");
+        // Remove existing .1 if it exists (Windows compatibility)
+        if rotated_path.exists()
+            && let Err(e) = fs::remove_file(&rotated_path)
+        {
+            eprintln!(
+                "Warning: Failed to remove {:?} before rotation: {}",
+                rotated_path, e
+            );
+            return;
+        }
+        if let Err(e) = fs::rename(log_path, &rotated_path) {
+            eprintln!(
+                "Warning: Failed to rotate current log {:?} -> {:?}: {}",
+                log_path, rotated_path, e
+            );
+        }
+    }
+}
+
 fn get_log_file_path() -> Result<PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -54,21 +117,21 @@ pub fn init_logging(is_service: bool) -> Result<()> {
     }
 
     match get_log_file_path() {
-        Ok(log_path) => match OpenOptions::new().create(true).append(true).open(&log_path) {
-            Ok(log_file) => {
-                dispatch = dispatch.chain(log_file);
+        Ok(log_path) => {
+            rotate_logs_if_needed(&log_path);
+            match OpenOptions::new().create(true).append(true).open(&log_path) {
+                Ok(log_file) => {
+                    dispatch = dispatch.chain(log_file);
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to open log file {:?}: {}", log_path, e);
+                }
             }
-            Err(e) => {
-                eprintln!("Warning: Failed to open log file {:?}: {}", log_path, e);
-            }
-        },
+        }
         Err(e) => {
             eprintln!("Warning: Failed to get log file path: {}", e);
         }
     }
-
-    #[cfg(target_os = "windows")]
-    if is_service {}
 
     dispatch.apply().map_err(|e| {
         crate::error::AppError::Service(format!("Failed to initialize logging: {}", e))

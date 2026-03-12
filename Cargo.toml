@@ -35,7 +35,7 @@ eventlog = "0.3"
 winres = "0.1.12"
 
 [target.x86_64-unknown-linux-musl.dependencies]
-openssl = { version = "0.10.75", features = ["vendored"] }
+openssl = { version = "0.10.76", features = ["vendored"] }
 
 [target.aarch64-unknown-linux-musl.dependencies]
-openssl = { version = "0.10.75", features = ["vendored"] }
+openssl = { version = "0.10.76", features = ["vendored"] }

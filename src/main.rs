@@ -1,4 +1,5 @@
 mod captive_portal;
+mod config;
 mod credentials;
 mod daemon;
 mod error;
@@ -11,10 +12,10 @@ use crate::credentials::SERVICE_NAME;
 use clap::{Parser, Subcommand};
 use console::Term;
 use error::{AppError, Result};
-use log::{error, info};
 use service::ServiceManager;
 use std::env;
 use std::fs;
+use tracing::{error, info};
 
 #[derive(Parser)]
 #[command(name = "acp")]
@@ -45,6 +46,8 @@ enum Commands {
         #[arg(short, long)]
         clear_credentials: bool,
     },
+
+    Init,
 
     #[command(hide = true)]
     Run,
@@ -215,33 +218,45 @@ async fn logout_command(clear_creds: bool) -> Result<()> {
 }
 
 async fn health_check() -> Result<()> {
-    info!("Performing health check...");
+    use indicatif::{ProgressBar, ProgressStyle};
 
+    let spinner_style = ProgressStyle::with_template("{spinner:.cyan} {msg}")
+        .unwrap()
+        .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "✓"]);
+
+    let sp = ProgressBar::new_spinner().with_style(spinner_style.clone());
+    sp.set_message("Checking credentials...");
+    sp.enable_steady_tick(std::time::Duration::from_millis(80));
     match credentials::get_credentials() {
         Ok((username, _)) => {
-            info!("✓ Credentials found for user: {username}");
+            sp.finish_with_message(format!("✓ Credentials found for user: {username}"));
         }
         Err(e) => {
-            error!("✗ Failed to retrieve credentials: {e}");
+            sp.finish_with_message(format!("✗ Failed to retrieve credentials: {e}"));
             return Err(e);
         }
     }
 
+    let sp = ProgressBar::new_spinner().with_style(spinner_style.clone());
+    sp.set_message("Checking for captive portal...");
+    sp.enable_steady_tick(std::time::Duration::from_millis(80));
     match captive_portal::check_captive_portal().await {
         Ok(Some((url, magic))) => {
-            info!("✓ Captive portal detected at: {url}");
-            info!("✓ Magic value extracted: {magic}");
+            sp.finish_with_message(format!("⚠ Captive portal detected at: {url}"));
+            println!("  Magic value: {magic}");
         }
         Ok(None) => {
-            info!("✓ No captive portal detected (internet is accessible)");
+            sp.finish_with_message(
+                "✓ No captive portal detected (internet is accessible)".to_string(),
+            );
         }
         Err(e) => {
-            error!("✗ Network check failed: {e}");
+            sp.finish_with_message(format!("✗ Network check failed: {e}"));
             return Err(e);
         }
     }
 
-    info!("Health check completed successfully");
+    println!("\n✓ Health check completed successfully");
     Ok(())
 }
 
@@ -340,20 +355,31 @@ async fn show_status() -> Result<()> {
         println!("Service:            ✗ {}", service_state);
     }
 
-    print!("Internet:           ");
-    match captive_portal::verify_internet_connectivity().await {
-        Ok(true) => println!("✓ Connected"),
-        Ok(false) | Err(_) => println!("✗ Not connected"),
-    }
+    {
+        use indicatif::{ProgressBar, ProgressStyle};
+        let spinner_style = ProgressStyle::with_template("  {spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "✓"]);
 
-    print!("Portal Status:      ");
-    match captive_portal::check_captive_portal().await {
-        Ok(Some((url, _))) => {
-            println!("⚠ Detected");
-            println!("Portal URL:         {}", url);
+        let sp = ProgressBar::new_spinner().with_style(spinner_style.clone());
+        sp.set_message("Checking internet connectivity...");
+        sp.enable_steady_tick(std::time::Duration::from_millis(80));
+        match captive_portal::verify_internet_connectivity().await {
+            Ok(true) => sp.finish_with_message("Internet:           ✓ Connected"),
+            Ok(false) | Err(_) => sp.finish_with_message("Internet:           ✗ Not connected"),
         }
-        Ok(None) => println!("✓ Not detected"),
-        Err(_) => println!("✗ Check failed"),
+
+        let sp = ProgressBar::new_spinner().with_style(spinner_style.clone());
+        sp.set_message("Checking for captive portal...");
+        sp.enable_steady_tick(std::time::Duration::from_millis(80));
+        match captive_portal::check_captive_portal().await {
+            Ok(Some((url, _))) => {
+                sp.finish_with_message("Portal Status:      ⚠ Detected");
+                println!("Portal URL:         {}", url);
+            }
+            Ok(None) => sp.finish_with_message("Portal Status:      ✓ Not detected"),
+            Err(_) => sp.finish_with_message("Portal Status:      ✗ Check failed"),
+        }
     }
 
     if let Ok(state_path) = state::get_state_file_path()
@@ -450,6 +476,24 @@ async fn handle_windows_service_command(cmd: ServiceCommands) -> Result<()> {
     }
 }
 
+fn init_command() -> error::Result<()> {
+    match config::get_config_file_path() {
+        Ok(path) if path.exists() => {
+            println!("\n⚠  Config file already exists at: {}\n", path.display());
+            println!("Edit it to customize ACP behavior.");
+            println!();
+            Ok(())
+        }
+        _ => {
+            let path = config::write_default_config()?;
+            println!("\n✓ Default config written to: {}\n", path.display());
+            println!("Edit this file to customize ACP behavior.");
+            println!();
+            Ok(())
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -460,12 +504,17 @@ async fn main() {
         eprintln!("Warning: Failed to initialize logging: {}", e);
     }
 
+    if let Err(e) = config::init_config() {
+        eprintln!("Warning: Failed to load config: {}", e);
+    }
+
     let result = match cli.command {
         Some(Commands::Setup { username }) => setup(username).await,
         Some(Commands::UpdateCredentials { username }) => update_credentials(username).await,
         Some(Commands::Status) => show_status().await,
         Some(Commands::Health) => health_check().await,
         Some(Commands::Logout { clear_credentials }) => logout_command(clear_credentials).await,
+        Some(Commands::Init) => init_command(),
         Some(Commands::Run) => daemon::run().await,
         #[cfg(target_os = "windows")]
         Some(Commands::Service(cmd)) => handle_windows_service_command(cmd).await,

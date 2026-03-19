@@ -1,30 +1,27 @@
 use crate::captive_portal;
+use crate::config;
 use crate::credentials;
 use crate::error::{AppError, Result};
 use crate::notifications;
 use crate::state;
-use log::{error, info, warn};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tracing::{error, info, warn};
 
-const MAX_DELAY_SECS: u64 = 1800;
-const MIN_DELAY_SECS: u64 = 10;
 const CHANNEL_CAPACITY: usize = 10;
 
 #[cfg(unix)]
 async fn shutdown_signal() -> Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
 
-    let mut sigterm = signal(SignalKind::terminate())
-        .map_err(|e| {
-            error!("Failed to create SIGTERM handler: {}", e);
-            e
-        })?;
-    let mut sigint = signal(SignalKind::interrupt())
-        .map_err(|e| {
-            error!("Failed to create SIGINT handler: {}", e);
-            e
-        })?;
+    let mut sigterm = signal(SignalKind::terminate()).map_err(|e| {
+        error!("Failed to create SIGTERM handler: {}", e);
+        e
+    })?;
+    let mut sigint = signal(SignalKind::interrupt()).map_err(|e| {
+        error!("Failed to create SIGINT handler: {}", e);
+        e
+    })?;
 
     tokio::select! {
         _ = sigterm.recv() => {
@@ -40,12 +37,10 @@ async fn shutdown_signal() -> Result<()> {
 
 #[cfg(not(unix))]
 async fn shutdown_signal() -> Result<()> {
-    tokio::signal::ctrl_c()
-        .await
-        .map_err(|e| {
-            error!("Failed to listen for Ctrl+C: {}", e);
-            e
-        })?;
+    tokio::signal::ctrl_c().await.map_err(|e| {
+        error!("Failed to listen for Ctrl+C: {}", e);
+        e
+    })?;
     info!("Received Ctrl+C, initiating graceful shutdown...");
     Ok(())
 }
@@ -85,7 +80,10 @@ pub async fn run() -> Result<()> {
 }
 
 pub async fn run_with_credentials(username: &str, password: &str) -> Result<()> {
-    let mut sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
+    let cfg = config::get_config();
+    let max_delay = Duration::from_secs(cfg.max_delay_secs);
+    let min_delay = Duration::from_secs(cfg.min_delay_secs);
+    let mut sleep_duration = min_delay;
 
     let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
 
@@ -118,7 +116,7 @@ pub async fn run_with_credentials(username: &str, password: &str) -> Result<()> 
 
     info!("Performing initial check for captive portal on startup...");
     if let Ok(true) = check_and_login(username, password).await {
-        sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
+        sleep_duration = max_delay;
         state::update_state_file(None, true).ok();
     }
 
@@ -144,10 +142,10 @@ pub async fn run_with_credentials(username: &str, password: &str) -> Result<()> 
                 tokio::time::sleep(Duration::from_secs(3)).await;
 
                 if let Ok(true) = check_and_login(username, password).await {
-                    sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
+                    sleep_duration = max_delay;
                     state::update_state_file(None, true).ok();
                 } else {
-                    sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
+                    sleep_duration = min_delay;
                     state::update_state_file(None, false).ok();
                 }
             },
@@ -156,17 +154,17 @@ pub async fn run_with_credentials(username: &str, password: &str) -> Result<()> 
                 info!("Polling interval elapsed. Checking for captive portal...");
                 match check_and_login(username, password).await {
                     Ok(true) => {
-                        sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
+                        sleep_duration = max_delay;
                         state::update_state_file(None, true).ok();
                     },
                     Ok(false) => {
                         let current_secs = sleep_duration.as_secs();
-                        let next_secs = (current_secs / 2).max(MIN_DELAY_SECS);
+                        let next_secs = (current_secs / 2).max(min_delay.as_secs());
                         sleep_duration = Duration::from_secs(next_secs);
                         state::update_state_file(None, false).ok();
                     },
                     Err(_) => {
-                        sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
+                        sleep_duration = min_delay;
                         state::update_state_file(None, false).ok();
                     }
                 }
@@ -184,7 +182,10 @@ pub async fn run_with_shutdown(
     password: &str,
     shutdown_rx: std::sync::mpsc::Receiver<()>,
 ) {
-    let mut sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
+    let cfg = config::get_config();
+    let max_delay = Duration::from_secs(cfg.max_delay_secs);
+    let min_delay = Duration::from_secs(cfg.min_delay_secs);
+    let mut sleep_duration = min_delay;
 
     let (tx, mut rx) = mpsc::channel::<()>(CHANNEL_CAPACITY);
 
@@ -219,7 +220,7 @@ pub async fn run_with_shutdown(
 
     info!("Performing initial captive portal check...");
     if let Ok(true) = check_and_login(username, password).await {
-        sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
+        sleep_duration = max_delay;
     }
 
     loop {
@@ -236,9 +237,9 @@ pub async fn run_with_shutdown(
                 tokio::time::sleep(Duration::from_secs(3)).await;
 
                 if let Ok(true) = check_and_login(username, password).await {
-                    sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
+                    sleep_duration = max_delay;
                 } else {
-                    sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
+                    sleep_duration = min_delay;
                 }
             },
 
@@ -246,15 +247,15 @@ pub async fn run_with_shutdown(
                 info!("Polling interval elapsed");
                 match check_and_login(username, password).await {
                     Ok(true) => {
-                        sleep_duration = Duration::from_secs(MAX_DELAY_SECS);
+                        sleep_duration = max_delay;
                     },
                     Ok(false) => {
                         let current_secs = sleep_duration.as_secs();
-                        let next_secs = (current_secs / 2).max(MIN_DELAY_SECS);
+                        let next_secs = (current_secs / 2).max(min_delay.as_secs());
                         sleep_duration = Duration::from_secs(next_secs);
                     },
                     Err(_) => {
-                        sleep_duration = Duration::from_secs(MIN_DELAY_SECS);
+                        sleep_duration = min_delay;
                     }
                 }
             },

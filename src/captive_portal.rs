@@ -1,34 +1,14 @@
+use crate::config;
 use crate::error::{AppError, Result};
-use log::{error, info, warn};
-use regex::Regex;
 use reqwest::StatusCode;
+use scraper::{Html, Selector};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
+use tracing::{error, info, warn};
 
-const MAX_LOGIN_RETRIES: u32 = 3;
-const INITIAL_RETRY_DELAY_SECS: u64 = 2;
 const LOGOUT_URL: &str = "https://login.iitmandi.ac.in:1003/logout?";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const DEFAULT_CONNECTIVITY_CHECK_URL: &str = "http://clients3.google.com/generate_204";
-
-fn get_connectivity_check_url() -> &'static str {
-    static URL: OnceLock<String> = OnceLock::new();
-    URL.get_or_init(|| {
-        std::env::var("ACP_CONNECTIVITY_URL")
-            .unwrap_or_else(|_| DEFAULT_CONNECTIVITY_CHECK_URL.to_string())
-    })
-}
-
-fn portal_url_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"window\.location="([^"]*)""#).unwrap())
-}
-
-fn magic_value_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"<input type="hidden" name="magic" value="([^"]*)">"#).unwrap())
-}
 
 fn get_client() -> Result<reqwest::Client> {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -71,10 +51,10 @@ pub async fn logout() -> Result<()> {
 }
 
 pub async fn verify_internet_connectivity() -> Result<bool> {
-    let check_url = get_connectivity_check_url();
+    let cfg = config::get_config();
     let client = get_client()?;
 
-    match client.get(check_url).send().await {
+    match client.get(&cfg.connectivity_check_url).send().await {
         Ok(resp) if resp.status() == StatusCode::NO_CONTENT => {
             info!("Internet connectivity verified: received expected 204 response");
             Ok(true)
@@ -154,10 +134,13 @@ pub async fn login_with_retry(
     password: &str,
     magic: &str,
 ) -> Result<()> {
+    let cfg = config::get_config();
+    let max_retries = cfg.max_retries;
+    let initial_retry_delay = cfg.initial_retry_delay_secs;
     let mut last_error: Option<AppError> = None;
 
-    for attempt in 1..=MAX_LOGIN_RETRIES {
-        info!("Login attempt {}/{}", attempt, MAX_LOGIN_RETRIES);
+    for attempt in 1..=max_retries {
+        info!("Login attempt {}/{}", attempt, max_retries);
 
         match login(portal_url, username, password, magic).await {
             Ok(()) => {
@@ -170,18 +153,15 @@ pub async fn login_with_retry(
                 error!("Login attempt {} failed: {}", attempt, e);
                 last_error = Some(e);
 
-                if attempt < MAX_LOGIN_RETRIES {
+                if attempt < max_retries {
                     info!("Logging out before retry to ensure clean state...");
                     let _ = logout().await;
 
-                    let delay_secs = INITIAL_RETRY_DELAY_SECS * 2u64.pow(attempt - 1);
+                    let delay_secs = initial_retry_delay * 2u64.pow(attempt - 1);
                     warn!("Retrying login in {} seconds...", delay_secs);
                     tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
                 } else {
-                    error!(
-                        "All {} login attempts failed. Giving up.",
-                        MAX_LOGIN_RETRIES
-                    );
+                    error!("All {} login attempts failed. Giving up.", max_retries);
                 }
             }
         }
@@ -193,26 +173,44 @@ pub async fn login_with_retry(
 }
 
 pub fn extract_captive_portal_url(html: &str) -> Option<String> {
-    portal_url_regex()
-        .captures(html)
-        .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+    let document = Html::parse_document(html);
+    let selector = Selector::parse("script").ok()?;
+
+    for element in document.select(&selector) {
+        let script_text: String = element.text().collect();
+        if let Some(start) = script_text.find("window.location=\"") {
+            let url_start = start + "window.location=\"".len();
+            if let Some(end) = script_text[url_start..].find('"') {
+                let url = &script_text[url_start..url_start + end];
+                if !url.is_empty() {
+                    return Some(url.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 pub fn extract_magic_value(html: &str) -> Option<String> {
-    magic_value_regex()
-        .captures(html)
-        .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
-        .filter(|s| !s.is_empty()) // Filter out empty magic values
+    let document = Html::parse_document(html);
+    let selector = Selector::parse("input[name=\"magic\"]").ok()?;
+
+    document
+        .select(&selector)
+        .next()?
+        .attr("value")
+        .filter(|v| !v.is_empty())
+        .map(String::from)
 }
 
 pub async fn check_captive_portal() -> Result<Option<(String, String)>> {
-    let check_url = get_connectivity_check_url();
+    let cfg = config::get_config();
     let max_check_retries = 2;
     let mut last_error: Option<reqwest::Error> = None;
     let client = get_client()?;
 
     for attempt in 1..=max_check_retries {
-        match client.get(check_url).send().await {
+        match client.get(&cfg.connectivity_check_url).send().await {
             Ok(connectivity_check_resp) => {
                 return check_portal_response(connectivity_check_resp, &client).await;
             }
@@ -297,7 +295,7 @@ mod tests {
 
     #[test]
     fn test_extract_captive_portal_url_valid() {
-        let html = r#"<script>window.location="https://login.iitmandi.ac.in:1003/portal"</script>"#;
+        let html = r#"<html><head><script>window.location="https://login.iitmandi.ac.in:1003/portal"</script></head></html>"#;
         assert_eq!(
             extract_captive_portal_url(html),
             Some("https://login.iitmandi.ac.in:1003/portal".to_string())
@@ -312,25 +310,26 @@ mod tests {
 
     #[test]
     fn test_extract_magic_value_valid() {
-        let html = r#"<form><input type="hidden" name="magic" value="abc123def456"></form>"#;
+        let html =
+            r#"<html><form><input type="hidden" name="magic" value="abc123def456"></form></html>"#;
         assert_eq!(extract_magic_value(html), Some("abc123def456".to_string()));
     }
 
     #[test]
     fn test_extract_magic_value_missing() {
-        let html = r#"<form><input type="text" name="username"></form>"#;
+        let html = r#"<html><form><input type="text" name="username"></form></html>"#;
         assert_eq!(extract_magic_value(html), None);
     }
 
     #[test]
     fn test_extract_magic_value_empty() {
-        let html = r#"<input type="hidden" name="magic" value="">"#;
+        let html = r#"<html><input type="hidden" name="magic" value=""></html>"#;
         assert_eq!(extract_magic_value(html), None);
     }
 
     #[test]
     fn test_extract_portal_url_with_special_chars() {
-        let html = r#"window.location="https://portal.example.com/login?redirect=http://example.com&token=xyz""#;
+        let html = r#"<html><script>window.location="https://portal.example.com/login?redirect=http://example.com&token=xyz"</script></html>"#;
         assert_eq!(
             extract_captive_portal_url(html),
             Some(
@@ -338,5 +337,17 @@ mod tests {
                     .to_string()
             )
         );
+    }
+
+    #[test]
+    fn test_extract_magic_value_with_attributes_reordered() {
+        let html = r#"<html><form><input name="magic" type="hidden" value="xyz789"></form></html>"#;
+        assert_eq!(extract_magic_value(html), Some("xyz789".to_string()));
+    }
+
+    #[test]
+    fn test_extract_portal_url_no_script_tag() {
+        let html = r#"<html><body>window.location="https://example.com"</body></html>"#;
+        assert_eq!(extract_captive_portal_url(html), None);
     }
 }

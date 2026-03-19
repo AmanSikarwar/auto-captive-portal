@@ -9,7 +9,9 @@ A Rust-based daemon that automatically authenticates against IIT Mandi's captive
 - **Secure Credentials**: Stores credentials in OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager)
 - **Desktop Notifications**: Get notified when successfully logged in
 - **Smart Retry Logic**: Automatic retry with exponential backoff on login failures
-- **Service Status**: Monitor service health and login statistics
+- **Service Status**: Monitor service health and login statistics with animated spinners
+- **Configurable**: Optional `config.toml` for customizing poll intervals, connectivity check URL, and retry behavior
+- **Structured Logging**: Async-aware structured logging with automatic log rotation
 - **Cross-Platform**: Supports macOS (x86_64, ARM64), Linux (x86_64, ARM64), and Windows (x86_64)
 
 ## Prerequisites
@@ -71,6 +73,9 @@ acp update-credentials
 
 # Perform health check (verify credentials, portal detection, connectivity)
 acp health
+
+# Initialize default configuration file
+acp init
 
 # Logout from captive portal
 acp logout
@@ -216,24 +221,42 @@ ACP uses a **hybrid monitoring approach** for optimal responsiveness and resourc
    - Detects: Wi-Fi connections, VPN changes, ethernet connections
 
 2. **Adaptive Polling** (exponential backoff)
-   - **Portal detected**: Checks every 10 seconds
-   - **Successfully logged in**: Checks every 30 minutes (1800 seconds)
-   - **No portal found**: Gradually decreases interval (exponential decay to 10s minimum)
+   - **Portal detected**: Checks every 10 seconds (configurable via `min_delay_secs`)
+   - **Successfully logged in**: Checks every 30 minutes (configurable via `max_delay_secs`)
+   - **No portal found**: Gradually decreases interval (exponential decay to minimum)
 
 ### Authentication Flow
 
-1. **Portal Detection**: Requests `http://clients3.google.com/generate_204`
+1. **Portal Detection**: Requests `http://clients3.google.com/generate_204` (configurable)
    - No portal: Receives 204 response → Internet accessible
-   - Portal present: Receives 200 redirect → Extract portal URL and magic value
+   - Portal present: Receives 200 redirect → Extract portal URL and magic value using DOM parsing
 
 2. **Login Attempt**: POSTs to `https://login.iitmandi.ac.in:1003/portal?` with:
    - Username and password (from keychain)
-   - Magic value (extracted from portal HTML)
+   - Magic value (extracted from portal HTML via CSS selectors)
    - Redirect URL
 
 3. **Verification**: Confirms internet connectivity after login
-   - Success → Desktop notification + Set 30-minute poll interval
-   - Failure → Retry with exponential backoff (max 3 attempts)
+   - Success → Desktop notification + Set max poll interval
+   - Failure → Retry with exponential backoff (configurable max retries)
+
+### Configuration
+
+ACP works out of the box with sensible defaults. For customization, run `acp init` to create a config file:
+
+- **macOS/Linux**: `~/.config/acp/config.toml`
+- **Windows**: `%APPDATA%\acp\config.toml`
+
+```toml
+connectivity_check_url = "http://clients3.google.com/generate_204"
+max_delay_secs = 1800
+min_delay_secs = 10
+max_retries = 3
+initial_retry_delay_secs = 2
+log_level = "INFO"
+```
+
+All fields are optional — missing fields use defaults. The environment variable `ACP_CONNECTIVITY_URL` can also override the connectivity check URL.
 
 ### Credential Security
 
@@ -306,8 +329,8 @@ cargo build --release
 # Run setup (stores credentials)
 ./target/release/acp-script setup
 
-# Run daemon directly
-RUST_LOG=INFO ./target/release/acp-script
+# Run daemon directly (set log level via RUST_LOG env var)
+RUST_LOG=debug ./target/release/acp-script
 
 # Or run health check
 ./target/release/acp-script health
@@ -321,12 +344,13 @@ RUST_LOG=INFO ./target/release/acp-script
 src/
 ├── main.rs           # CLI entry point and command handlers
 ├── daemon.rs         # Core daemon loop with hybrid monitoring
-├── captive_portal.rs # Portal detection and authentication
+├── captive_portal.rs # Portal detection and authentication (DOM-based)
+├── config.rs         # Configuration file support (TOML)
 ├── credentials.rs    # Secure credential storage (OS keychain)
 ├── service.rs        # Platform-specific service management
 ├── state.rs          # Persistent state tracking
 ├── notifications.rs  # Desktop notifications
-├── logging.rs        # Logging configuration
+├── logging.rs        # Structured logging (tracing)
 └── error.rs          # Error types
 ```
 
@@ -385,6 +409,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Acknowledgments
 
 - Built with [Rust](https://www.rust-lang.org/)
+- HTML parsing via [scraper](https://github.com/rust-scraper/scraper)
+- Structured logging via [tracing](https://github.com/tokio-rs/tracing)
 - Network monitoring via [netwatcher](https://github.com/mullvad/netwatch)
 - Secure credential storage via [keyring-rs](https://github.com/hwchen/keyring-rs)
 - Desktop notifications via [notify-rust](https://github.com/hoodie/notify-rust)
+- CLI spinners via [indicatif](https://github.com/console-rs/indicatif)

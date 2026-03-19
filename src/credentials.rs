@@ -1,6 +1,6 @@
 use crate::error::{AppError, Result};
 use keyring::Entry;
-use log::info;
+use tracing::info;
 
 pub const SERVICE_NAME: &str = if cfg!(target_os = "macos") {
     "com.user.acp"

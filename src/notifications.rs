@@ -1,5 +1,5 @@
-use log::{error, info};
 use notify_rust::Notification;
+use tracing::{error, info};
 
 pub async fn send_notification(message: &str) {
     info!("Sending notification: {message}");

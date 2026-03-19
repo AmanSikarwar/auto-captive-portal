@@ -1,8 +1,8 @@
 use crate::credentials::SERVICE_NAME;
 use crate::error::{AppError, Result};
-use log::{error, info};
 use std::fs;
 use std::path::PathBuf;
+use tracing::{error, info};
 
 pub struct ServiceManager {
     executable_path: PathBuf,
@@ -293,10 +293,10 @@ pub mod windows_service_control {
 
 #[cfg(target_os = "windows")]
 pub mod windows_service_main {
-    use log::info;
     use std::ffi::OsString;
     use std::sync::mpsc;
     use std::time::Duration;
+    use tracing::info;
     use windows_service::{
         define_windows_service,
         service::{
@@ -315,7 +315,7 @@ pub mod windows_service_main {
 
     fn service_main(_arguments: Vec<OsString>) {
         if let Err(e) = run_service() {
-            log::error!("Service error: {}", e);
+            tracing::error!("Service error: {}", e);
         }
     }
 
@@ -367,7 +367,7 @@ pub mod windows_service_main {
     }
 
     async fn run_service_loop(shutdown_rx: mpsc::Receiver<()>) {
-        use log::error;
+        use tracing::error;
 
         let (username, password) = match crate::credentials::get_credentials() {
             Ok(creds) => creds,
